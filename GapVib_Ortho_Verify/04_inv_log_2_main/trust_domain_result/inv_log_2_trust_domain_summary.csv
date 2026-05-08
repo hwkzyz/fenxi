@@ -1,0 +1,2 @@
+model_label,response_model,basis_name,trust_x_min_mm,trust_x_max_mm,trust_half_width_mm,full_x_min_mm,full_x_max_mm,effective_x_min_mm,effective_x_max_mm,selection_mode
+field_basis_inv_log_2,field_basis,inv_log_2,-3.83727272727273,3.83727272727273,3.83727272727273,-4.824,4.824,-3.84165818181818,3.83727272727273,leave_one_gap_static_validation

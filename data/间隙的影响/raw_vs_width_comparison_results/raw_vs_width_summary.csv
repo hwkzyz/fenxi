@@ -1,0 +1,4 @@
+Method,Accuracy_percent,RMSE_mm
+Raw waveform (correlation),99.1071428571429,0.0188982236504614
+Raw waveform (RMSE),100,0
+Width signature,97.9166666666667,0.0288675134594813

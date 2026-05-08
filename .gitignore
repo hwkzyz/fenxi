@@ -1,0 +1,10 @@
+**/results/
+**/*.mat
+**/*.log
+**/*.tmp
+**/*.bak
+**/.DS_Store
+**/Thumbs.db
+.claude/
+codex-history-sync-tool/
+codexflow/
