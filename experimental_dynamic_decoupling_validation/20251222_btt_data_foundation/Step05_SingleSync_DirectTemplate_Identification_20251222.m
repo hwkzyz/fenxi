@@ -1,55 +1,67 @@
-clc; clear; close all;
+clc; close all;
 
 %STEP05_SINGLESYNC_DIRECTTEMPLATE_IDENTIFICATION_20251222
-% VERSION: QUERYSAFE_TWOSTAGE_V4_FULLRAW_20260704
+% VERSION: FOUNDATION_MAINPULSE_ADAPTIVE_FIXEDJOINTETA_GRADIENTDISPVP_20260708
 %
 % Key logic:
 %   1. High-speed waveform extraction follows the original OPRCenterStd
 %      DynamicMap route: fixed window around target blade passage time.
 %   2. No within-pulse uniform downsampling is applied; all raw samples in
 %      the fixed time window are mapped before x-domain masks.
-%   3. No dynamic-gradient / time-gradient / peak-quantile mask is used as
-%      the main fitting-point selector.
-%   4. Core bundle uses a query-safe shrunken region:
-%          core_mask = finite & inside_domain & inside_query_guard
-%   5. Optional expanded bundle uses phase-safe x_query:
+%   3. Core fitting uses the complete per-pass main pulse waveform:
+%          core_mask = finite & main_pulse & inside_domain & inside_query_guard
+%   4. VP scans all EO values without sensor eta; an adaptive EO set enters
+%      full nonlinear refinement.
+%   5. The formal 20251222 foundation route uses a fixed residual static
+%      sensor eta_s calibrated from dynamic NoEta residuals. NoEta/free-eta
+%      variants belong in comparison/diagnostic scripts.
+%   6. Optional expanded bundle uses active-model phase-safe x_query:
 %          x_query = x - dx_c - eta_s - A*sin(EO*theta + phi)
-%      and keeps points whose x_query stays inside the template domain.
-%   6. dynamic_effective_mask and main_pulse_mask are saved only for
-%      diagnostics unless S.core_mask_mode='legacy_base_query_safe'.
+%      and only expands per-pass main pulse points whose x_query stays
+%      inside the template domain.
 %
 % Forward model:
 %   V_i ~= T_{sensor,blade}(x_i - dx_c - eta_s - A*sin(EO*theta_i + phi))
 %
 % Usage:
 %   Run this script directly after Step02, Step03 and Step04.
+%   During method cleanup and paper/validation analysis, run only the
+%   current target blade first:
+%       STEP05_TARGET_BLADES=1
+%       STEP05_DEBUG_MAX_WINDOWS=2     % chain smoke test
+%       STEP05_DEBUG_MAX_WINDOWS=inf   % full target-window trend
 %
 % This is the official full-raw direct-template Step05 for the 20251222
 % foundation route. The feature-level baseline has been moved to
 % optional_diagnostics/Diag01_TemplateGuided_FeatureBaseline_20251222.m and
 % is diagnostic only. This file does not use pulse_feature_value as the
-% identification observation and does not read legacy 20251222 route
-% products.
+% identification observation. Legacy DynamicMap replay belongs under
+% legacy_step05/ or optional_diagnostics/, not this official entry point.
 
 cfg = BTTProjectConfig_20251222();
 
 %% Step05 local settings
 S = struct();
-S.version = 'QUERYSAFE_TWOSTAGE_V4_FULLRAW_20260704';
+S.method_name = 'foundation_mainpulse_adaptive_fixedeta_gradient_displacement_vp';
+S.version = 'FOUNDATION_MAINPULSE_ADAPTIVE_FIXEDJOINTETA_GRADIENTDISPVP_20260708';
+S.method_file_tag = 'FixedEtaGradDispVP';
 
 S.show_plots = true;
 S.save_figures = cfg.save_figures;
 S.target_cases = cfg.dynamic_cases;
-S.target_blades = 1:cfg.blades_num;
+S.target_blades = 1;
+S.run_scope = 'target_blade_regression';
+S.validation_sequence = ['single blade + 2 windows -> single blade + all target windows -> ' ...
+    'additional comparison blades only as needed'];
 S.analysis_sensors = cfg.sensor_ids;
 S.reference_sensor_id = S.analysis_sensors(1);
 
-% 20251222 should follow the original high-speed OPRCenterStd route by
-% default. The 20250527 foundation uses longer windows, but the verified
-% 20251222 identification chain starts at 50.2 s and builds 3-lap windows
-% over a 20-lap target segment.
-S.analysis_start_time_s = 50.2;
-S.target_laps = 20;
+% 20251222 is validated against the successful SG Step5 chain:
+% start at 50.0 s, use 20 target laps, and slide 3-lap windows by one lap.
+% Later start times are useful diagnostics, but they are not the reference
+% route for judging whether Step04/Step05 is reproducing the experiment.
+S.analysis_start_time_s = 50.0;
+S.target_laps = 10;
 S.window_laps = 3;
 S.sliding_step_laps = 1;
 S.debug_max_windows = inf;
@@ -60,6 +72,13 @@ S.output_dir = get_cfg_or_default_local(cfg, ...
 S.figure_dir = get_cfg_or_default_local(cfg, ...
     'step05_direct_template_figure_dir', ...
     fullfile(cfg.figure_root, 'step05_single_sync_direct_template'));
+S.dynamic_map_override_file = '';
+
+dynamic_map_override_env = strtrim(getenv('STEP05_DYNAMIC_MAP_OVERRIDE_FILE'));
+if ~isempty(dynamic_map_override_env)
+    error(['STEP05_DYNAMIC_MAP_OVERRIDE_FILE is a legacy replay route. ' ...
+        'Use legacy_step05 or optional_diagnostics instead of the official foundation Step05.']);
+end
 
 run_tag_env = strtrim(getenv('STEP05_OUTPUT_TAG'));
 if ~isempty(run_tag_env)
@@ -87,9 +106,15 @@ end
 
 debug_max_windows_env = strtrim(getenv('STEP05_DEBUG_MAX_WINDOWS'));
 if ~isempty(debug_max_windows_env)
-    parsed_debug_windows = str2double(debug_max_windows_env);
-    if isfinite(parsed_debug_windows) && parsed_debug_windows > 0
-        S.debug_max_windows = parsed_debug_windows;
+    if any(strcmpi(debug_max_windows_env, {'all', 'inf', 'infinite'}))
+        S.debug_max_windows = inf;
+    else
+        parsed_debug_windows = str2double(debug_max_windows_env);
+        if isfinite(parsed_debug_windows) && parsed_debug_windows > 0
+            S.debug_max_windows = parsed_debug_windows;
+        else
+            error('STEP05_DEBUG_MAX_WINDOWS must be a positive number, all, or inf.');
+        end
     end
 end
 
@@ -147,56 +172,108 @@ end
 %% Step05 identification settings
 S.freq_search_hz = [100 1000];
 S.eo_pad = 2;
-% No EO prior: VP is used only to provide initial values.  Every finite EO
-% candidate in the search band enters the full-waveform direct-template fit.
-S.top_k_eo = inf;
+
+S.eo_candidate_policy = 'adaptive_full_fit';
+S.vp_top_k_min = 3;
+S.vp_top_k_max = 7;
+S.vp_top_rank_keep = 7;
+S.vp_gap_ratio_keep = 0.05;
+S.include_neighbor_eo = true;
+S.neighbor_eo_radius = 1;
 S.vp_include_sensor_eta = false;
+S.vp_bundle_mode = 'fit_bundle';
+S.vp_seed_observation_mode = 'gradient_displacement';
+S.vp_template_inverse_mode = 'branch_monotone';
+S.vp_rank_score_mode = 'full_seed';
+S.eo_decision_score_mode = 'weighted_voltage_rmse';
+S.vp_gradient_min_ratio = 0.10;
+S.vp_gradient_reference_quantile = 95;
+S.vp_gradient_weight_power = 2;
 S.fit_sensor_eta = false;
-S.static_eta_enable = false;
+S.eta_model_policy = 'single';
+S.active_eta_model = 'fixed_joint_static_eta';
+S.eta_models = {S.active_eta_model};
+S.eta_reference_sensor = S.analysis_sensors(1);
+S.sensor_eta_mode = 'fixed_static';
+S.static_eta_source = 'joint_dynamic_residual_eta_preview';
+S.static_eta_file = '';
+S.sensor_eta_prior_mm = zeros(1, numel(S.analysis_sensors));
+S.static_eta_enable = true;
 S.static_eta_max_abs_report_mm = inf;
 S.eo_low_gap_ratio_threshold = 0.03;
-S.reject_ambiguous_frequency = true;
+S.reject_ambiguous_frequency = false;
 S.unconstrained_unidentifiable_gap_ratio = 0.08;
 S.unconstrained_unidentifiable_min_candidates = 4;
 S.joint_eo_gap_ratio_threshold = 0.03;
+S.joint_missing_window_penalty = 0.50;
+S.joint_min_window_fraction = 0.50;
+% Real-time route: each window reports its own causal/local identification.
+% Joint EO summaries are offline diagnostics only and must not overwrite
+% the window-level EO_id/A/phase/dx results.
+S.joint_reported_refit_enable = false;
+S.joint_reported_refit_policy = 'refit_each_window_to_joint_eo';
+S.joint_reported_refit_skip_status = {'empty', 'no_valid_candidate_table', ...
+    'low_window_coverage_ambiguous'};
 
 top_k_eo_env = strtrim(getenv('STEP05_TOP_K_EO'));
 if ~isempty(top_k_eo_env)
-    if any(strcmpi(top_k_eo_env, {'all', 'inf', 'infinite'}))
-        S.top_k_eo = inf;
+    error(['STEP05_TOP_K_EO belongs to the archived top-k Step05 route. ' ...
+        'The official foundation Step05 uses adaptive_full_fit.']);
+end
+
+vp_seed_observation_env = strtrim(getenv('STEP05_VP_SEED_OBSERVATION_MODE'));
+if ~isempty(vp_seed_observation_env)
+    vp_seed_observation_env = lower(strtrim(vp_seed_observation_env));
+    allowed_vp_observation_modes = {'gradient_displacement', ...
+        'static_residual_template_inversion', 'template_inversion', ...
+        'static_residual', 'linear_voltage_residual', 'voltage_gradient'};
+    if any(strcmpi(vp_seed_observation_env, allowed_vp_observation_modes))
+        S.vp_seed_observation_mode = vp_seed_observation_env;
     else
-        parsed_top_k_eo = str2double(top_k_eo_env);
-        if isfinite(parsed_top_k_eo) && parsed_top_k_eo >= 1
-            S.top_k_eo = floor(parsed_top_k_eo);
-        end
+        error('Unsupported STEP05_VP_SEED_OBSERVATION_MODE: %s', ...
+            vp_seed_observation_env);
     end
 end
 
-S.amplitude_limit_mm = inf;
-S.dx_c_limit_mm = inf;
-S.sensor_eta_limit_mm = inf;
-S.sensor_eta_reg_weight_v_per_mm = 0;
+S.amplitude_limit_mm = 0.50;
+S.dx_c_limit_mm = 0.35;
+S.sensor_eta_limit_mm = 0.20;
+S.sensor_eta_reg_weight_v_per_mm = 0.02;
 
 S.dynamic_window_mode = 'peak_centered_fixed';
 S.pulse_window_sec = 6e-4;
 S.pulse_pad_fraction = 0.30;
 S.pulse_min_pad_points = 50;
 
-S.core_mask_mode = 'legacy_base';
+S.core_mask_mode = 'sg_threshold_mainpulse_trust';
 S.domain_margin_mm = 0.02;
 
-S.query_guard_mode = 'adaptive';
+S.query_guard_mode = 'step04';
 S.query_guard_mm = [];
 S.query_guard_min_mm = 0.12;
-S.query_guard_max_mm = inf;
+S.query_guard_max_mm = S.amplitude_limit_mm + S.dx_c_limit_mm + ...
+    S.sensor_eta_limit_mm + 0.05;
 S.query_guard_safety_mm = 0.05;
 S.query_guard_quantile = 95;
 
 S.phase_safe_expansion = false;
 S.phase_safe_margin_mm = 0.03;
-S.phase_safe_reference_mode = 'core_current';
-S.choose_better_pass = true;
+S.phase_safe_reference_mode = 'prev_window';
+S.phase_safe_fallback_mode = 'linear_vp';
+S.phase_safe_refresh_every = 5;
+S.phase_safe_prev_max_clamp_fraction = 1e-6;
+S.phase_safe_prev_min_final_gap_ratio = 0.005;
+S.choose_better_pass = false;
 S.better_pass_rmse_tolerance_v = 0;
+S.main_pulse_mode = 'legacy_threshold';
+S.default_sensor_threshold = 0.5;
+if isfield(cfg, 'sensor_threshold_default') && ...
+        isfinite(cfg.sensor_threshold_default)
+    S.default_sensor_threshold = cfg.sensor_threshold_default;
+end
+S.enforce_parameter_bounds = true;
+S.enforce_legacy_parameter_bounds = false;
+S.use_template_eta_limit = false;
 
 %% Step05 diagnostic, gate, and optimizer settings
 S.pulse_mode = 'single';
@@ -205,25 +282,33 @@ S.dynamic_time_gradient_min_ratio = 0.15;
 S.dynamic_peak_quantile = 85;
 
 S.min_fit_points = 80;
-S.min_valid_pass_count = 2;
+S.min_valid_pass_fraction = 0.50;
+S.min_valid_pass_count = ceil(S.min_valid_pass_fraction * ...
+    S.window_laps * numel(S.analysis_sensors));
+S.min_valid_sensor_count = min(2, numel(S.analysis_sensors));
+S.min_valid_lap_count = min(2, S.window_laps);
 S.weight_floor = 0.05;
-S.fit_weight_mode = 'legacy_product';
-S.domain_selection_mode = 'soft';
-S.domain_soft_margin_mm = 0.20;
+S.fit_weight_mode = 'sg_edge_template';
+S.domain_selection_mode = 'hard';
+S.domain_soft_margin_mm = 0;
 
 S.fminsearch_max_iter = 800;
 S.fminsearch_max_fun = 2000;
 S.direct_multistart_enable = true;
 S.direct_multistart_refine_top_n = 2;
-S.overshoot_penalty_weight = 0;
+S.overshoot_penalty_weight = 100;
 S.invalid_query_penalty_scale = 5;
-S.extrapolation_mode = 'nan_outside';
-% The official unconstrained route uses waveform-shape correlation as the
-% EO objective. Voltage RMSE remains reported as a diagnostic, but it is too
-% sensitive to unconstrained static offsets to be the default frequency
-% discriminator for this 20251222 case.
-S.objective_mode = 'corr';
+S.extrapolation_mode = 'clip_to_grid';
+S.template_interp_method = 'pchip';
+S.objective_mode = 'rmse';
 S.store_bundle_preview_points = 6000;
+
+method_preset_env = strtrim(getenv('STEP05_METHOD_PRESET'));
+if ~isempty(method_preset_env)
+    error(['STEP05_METHOD_PRESET is no longer supported by the official ' ...
+        'foundation Step05. Use legacy_step05 or optional_diagnostics for ' ...
+        'legacy/corr/all-EO routes.']);
+end
 
 max_iter_env = strtrim(getenv('STEP05_FMINSEARCH_MAX_ITER'));
 if ~isempty(max_iter_env)
@@ -247,124 +332,81 @@ end
 
 store_preview_env = strtrim(getenv('STEP05_STORE_BUNDLE_PREVIEW_POINTS'));
 if ~isempty(store_preview_env)
-    parsed_store_preview = str2double(store_preview_env);
-    if isfinite(parsed_store_preview) && parsed_store_preview > 0
-        S.store_bundle_preview_points = parsed_store_preview;
+    if any(strcmpi(store_preview_env, {'inf', 'infinite', 'all'}))
+        S.store_bundle_preview_points = inf;
     else
-        error('STEP05_STORE_BUNDLE_PREVIEW_POINTS must be a positive number.');
+        parsed_store_preview = str2double(store_preview_env);
+        if isfinite(parsed_store_preview) && parsed_store_preview > 0
+            S.store_bundle_preview_points = parsed_store_preview;
+        else
+            error('STEP05_STORE_BUNDLE_PREVIEW_POINTS must be positive, inf, infinite, or all.');
+        end
     end
 end
 
 extrapolation_mode_env = strtrim(getenv('STEP05_EXTRAPOLATION_MODE'));
 if ~isempty(extrapolation_mode_env)
-    allowed_extrapolation_modes = {'nan_outside', 'clip_to_grid'};
-    extrapolation_mode_env = lower(extrapolation_mode_env);
-    if any(strcmpi(extrapolation_mode_env, allowed_extrapolation_modes))
-        S.extrapolation_mode = extrapolation_mode_env;
-    else
-        error('STEP05_EXTRAPOLATION_MODE must be nan_outside or clip_to_grid.');
-    end
+    error('STEP05_EXTRAPOLATION_MODE changes the method route; use diagnostics/legacy scripts for alternatives.');
 end
 
 objective_mode_env = strtrim(getenv('STEP05_OBJECTIVE_MODE'));
 if ~isempty(objective_mode_env)
-    objective_mode_env = lower(objective_mode_env);
-    allowed_objective_modes = {'rmse', 'corr'};
-    if any(strcmpi(objective_mode_env, allowed_objective_modes))
-        S.objective_mode = objective_mode_env;
-    else
-        error('STEP05_OBJECTIVE_MODE must be rmse or corr.');
-    end
+    error('STEP05_OBJECTIVE_MODE changes the method route; official foundation Step05 uses RMSE.');
 end
 
 core_mask_mode_env = strtrim(getenv('STEP05_CORE_MASK_MODE'));
 if ~isempty(core_mask_mode_env)
-    allowed_core_modes = {'query_safe_full_wave', 'legacy_base_query_safe', 'legacy_base'};
-    if any(strcmpi(core_mask_mode_env, allowed_core_modes))
-        S.core_mask_mode = core_mask_mode_env;
-    else
-        error('STEP05_CORE_MASK_MODE must be query_safe_full_wave, legacy_base_query_safe, or legacy_base.');
-    end
+    error('STEP05_CORE_MASK_MODE changes the method route; official foundation Step05 uses per-pass main-pulse query-safe fitting.');
 end
 
 query_guard_mode_env = strtrim(getenv('STEP05_QUERY_GUARD_MODE'));
 if ~isempty(query_guard_mode_env)
-    allowed_query_guard_modes = {'step04', 'adaptive', 'fixed'};
-    if any(strcmpi(query_guard_mode_env, allowed_query_guard_modes))
-        S.query_guard_mode = lower(query_guard_mode_env);
-    else
-        error('STEP05_QUERY_GUARD_MODE must be step04, adaptive, or fixed.');
-    end
+    error('STEP05_QUERY_GUARD_MODE changes the method route; official foundation Step05 uses Step04 query-safe domains.');
 end
 
 domain_selection_mode_env = strtrim(getenv('STEP05_DOMAIN_SELECTION_MODE'));
 if ~isempty(domain_selection_mode_env)
-    allowed_domain_modes = {'hard', 'soft'};
-    if any(strcmpi(domain_selection_mode_env, allowed_domain_modes))
-        S.domain_selection_mode = lower(domain_selection_mode_env);
-    else
-        error('STEP05_DOMAIN_SELECTION_MODE must be hard or soft.');
-    end
+    error('STEP05_DOMAIN_SELECTION_MODE changes the method route; official foundation Step05 uses hard domain selection.');
 end
 
 domain_soft_margin_env = strtrim(getenv('STEP05_DOMAIN_SOFT_MARGIN_MM'));
 if ~isempty(domain_soft_margin_env)
-    parsed_domain_soft_margin = str2double(domain_soft_margin_env);
-    if isfinite(parsed_domain_soft_margin) && parsed_domain_soft_margin >= 0
-        S.domain_soft_margin_mm = parsed_domain_soft_margin;
-    else
-        error('STEP05_DOMAIN_SOFT_MARGIN_MM must be a nonnegative number.');
-    end
+    error('STEP05_DOMAIN_SOFT_MARGIN_MM is only meaningful for soft-domain diagnostic routes.');
 end
 
 query_guard_mm_env = strtrim(getenv('STEP05_QUERY_GUARD_MM'));
 if ~isempty(query_guard_mm_env)
-    parsed_query_guard = str2double(query_guard_mm_env);
-    if isfinite(parsed_query_guard) && parsed_query_guard >= 0
-        S.query_guard_mm = parsed_query_guard;
-    else
-        error('STEP05_QUERY_GUARD_MM must be a nonnegative number.');
-    end
+    error('STEP05_QUERY_GUARD_MM changes the method route; use Step04 x_query_safe_domain in the official Step05.');
 end
 
 query_guard_min_env = strtrim(getenv('STEP05_QUERY_GUARD_MIN_MM'));
 if ~isempty(query_guard_min_env)
-    parsed_query_guard_min = str2double(query_guard_min_env);
-    if isfinite(parsed_query_guard_min) && parsed_query_guard_min >= 0
-        S.query_guard_min_mm = parsed_query_guard_min;
-    else
-        error('STEP05_QUERY_GUARD_MIN_MM must be a nonnegative number.');
-    end
+    error('STEP05_QUERY_GUARD_MIN_MM changes fallback guard behavior; use diagnostics for guard sweeps.');
 end
 
 query_guard_max_env = strtrim(getenv('STEP05_QUERY_GUARD_MAX_MM'));
 if ~isempty(query_guard_max_env)
-    parsed_query_guard_max = str2double(query_guard_max_env);
-    if isfinite(parsed_query_guard_max) && parsed_query_guard_max >= 0
-        S.query_guard_max_mm = parsed_query_guard_max;
-    else
-        error('STEP05_QUERY_GUARD_MAX_MM must be a nonnegative number.');
-    end
+    error('STEP05_QUERY_GUARD_MAX_MM changes fallback guard behavior; use diagnostics for guard sweeps.');
 end
 
 vp_include_eta_env = strtrim(getenv('STEP05_VP_INCLUDE_SENSOR_ETA'));
 if ~isempty(vp_include_eta_env)
-    S.vp_include_sensor_eta = any(strcmpi(vp_include_eta_env, {'1', 'true', 'yes', 'on'}));
+    error('STEP05_VP_INCLUDE_SENSOR_ETA changes the VP seed model; official foundation Step05 keeps VP eta disabled.');
 end
 
-fit_sensor_eta_env = strtrim(getenv('STEP05_FIT_SENSOR_ETA'));
-if ~isempty(fit_sensor_eta_env)
-    S.fit_sensor_eta = any(strcmpi(fit_sensor_eta_env, {'1', 'true', 'yes', 'on'}));
+if ~isempty(strtrim(getenv('STEP05_FIT_SENSOR_ETA')))
+    error(['Free-eta is not a mainline Step05 option. ' ...
+        'Use Compare_Step05_FreeEta_20251222.m for the comparison route.']);
 end
 
-static_eta_env = strtrim(getenv('STEP05_STATIC_ETA_ENABLE'));
-if ~isempty(static_eta_env)
-    S.static_eta_enable = any(strcmpi(static_eta_env, {'1', 'true', 'yes', 'on'}));
+static_eta_file_env = strtrim(getenv('STEP05_STATIC_ETA_FILE'));
+if ~isempty(static_eta_file_env)
+    S.static_eta_file = static_eta_file_env;
 end
 
 phase_safe_env = strtrim(getenv('STEP05_PHASE_SAFE_EXPANSION'));
 if ~isempty(phase_safe_env)
-    S.phase_safe_expansion = any(strcmpi(phase_safe_env, {'1', 'true', 'yes', 'on'}));
+    error('STEP05_PHASE_SAFE_EXPANSION changes the method route; official foundation Step05 keeps it disabled.');
 end
 
 if ischar(S.target_cases) || isstring(S.target_cases)
@@ -374,11 +416,30 @@ target_cases = S.target_cases;
 
 fprintf('\n=== Step05: single-sync direct-template identification ===\n');
 fprintf('Dataset: %s\n', cfg.dataset);
+fprintf('Run scope: %s\n', S.run_scope);
+fprintf('Validation sequence: %s\n', S.validation_sequence);
 fprintf('Target cases: %s\n', strjoin(cellstr(target_cases), ', '));
 fprintf('Target blades: %s\n', mat2str(S.target_blades));
+if isequal(S.target_blades(:).', 1:cfg.blades_num)
+    fprintf('Target blade policy: all blades requested explicitly; expect mixed blade/template quality effects.\n');
+else
+    fprintf('Target blade policy: target blades only; use STEP05_TARGET_BLADES to add comparison blades.\n');
+end
+if isfinite(S.debug_max_windows)
+    fprintf('Window limit: first %d windows for chain/regression check.\n', S.debug_max_windows);
+else
+    fprintf('Window limit: all target windows.\n');
+end
 fprintf('Analysis sensors: %s\n', mat2str(S.analysis_sensors));
-fprintf('Model: V = T_{s,b}(x - dx_c - eta_s - A*sin(EO*theta + phi)).\n');
-fprintf('Eta gauge: eta of reference sensor CH%d is fixed to zero.\n', S.analysis_sensors(1));
+if isfield(S, 'active_eta_model') && strcmpi(S.active_eta_model, 'none')
+    fprintf('Model: V = T_{s,b}(x - dx_c - A*sin(EO*theta + phi)).\n');
+else
+    fprintf('Model: V = T_{s,b}(x - dx_c - eta_s - A*sin(EO*theta + phi)).\n');
+end
+fprintf('Eta policy: %s, active model=%s, reference CH%d.\n', ...
+    S.eta_model_policy, S.active_eta_model, S.eta_reference_sensor);
+fprintf('EO candidate policy: %s (VP all EO, adaptive full-fit set).\n', ...
+    S.eo_candidate_policy);
 fprintf('Core mask mode: %s\n', S.core_mask_mode);
 fprintf('Query-safe source: %s\n', S.query_guard_mode);
 fprintf('Phase-safe expansion: %d\n', S.phase_safe_expansion);
@@ -400,6 +461,30 @@ if ~isempty(template_override_file)
     fprintf('Step05 template override: %s\n', template_override_file);
 end
 
+validate_step05_template_contract_local(Template, cfg, S);
+template_opr_method = getfield_default_local(Template, 'OPR_Timing_Method', '');
+cfg_opr_method = getfield_default_local(cfg, 'opr_timing_method', '');
+if ~isempty(cfg_opr_method) && ~isempty(template_opr_method) && ...
+        ~strcmpi(strtrim(char(string(template_opr_method))), strtrim(char(string(cfg_opr_method))))
+    error('Step05:OPRReferenceMismatch', ...
+        'Template OPR_Timing_Method=%s, but cfg.opr_timing_method=%s. Rebuild Step01/Step04 consistently.', ...
+        char(string(template_opr_method)), char(string(cfg_opr_method)));
+end
+
+if isfield(S, 'active_eta_model') && ...
+        strcmpi(S.active_eta_model, 'fixed_joint_static_eta')
+    [S.sensor_eta_prior_mm, S.static_eta_prior_info] = ...
+        load_joint_static_eta_prior_local(cfg, S);
+    fprintf('Static eta source: %s\n', S.static_eta_source);
+    fprintf('Static eta prior (sensors %s, relative to CH%d): %s mm\n', ...
+        mat2str(S.analysis_sensors), S.reference_sensor_id, ...
+        mat2str(S.sensor_eta_prior_mm, 8));
+else
+    S.static_eta_prior_info = table(S.analysis_sensors(:), ...
+        zeros(numel(S.analysis_sensors), 1), ...
+        'VariableNames', {'sensor_id', 'eta_prior_mm'});
+end
+
 ResultSet = struct();
 ResultSet.Dataset = cfg.dataset;
 ResultSet.CreatedBy = mfilename;
@@ -417,15 +502,16 @@ for iCase = 1:numel(target_cases)
     ResultSet.Cases(iCase).BladeResult = case_result;
 end
 
-Step05_AllBlade_Summary = collect_step05_all_blade_summary_local(ResultSet);
+Step05_TargetBlade_Summary = collect_step05_all_blade_summary_local(ResultSet);
+Step05_AllBlade_Summary = Step05_TargetBlade_Summary; %#ok<NASGU>
 if exist(S.output_dir, 'dir') ~= 7
     mkdir(S.output_dir);
 end
-writetable(Step05_AllBlade_Summary, fullfile(S.output_dir, ...
-    sprintf('Step05_AllBlade_Summary_%s.csv', cfg.dataset)));
+writetable(Step05_TargetBlade_Summary, fullfile(S.output_dir, ...
+    sprintf('Step05_TargetBlade_Summary_%s.csv', cfg.dataset)));
 RunInfo = ResultSet.RunInfo; %#ok<NASGU>
 save(fullfile(S.output_dir, sprintf('Step05_RunInfo_%s.mat', cfg.dataset)), ...
-    'RunInfo', 'Step05_AllBlade_Summary');
+    'RunInfo', 'Step05_TargetBlade_Summary', 'Step05_AllBlade_Summary');
 
 
 function Summary = collect_step05_all_blade_summary_local(ResultSet)
@@ -488,10 +574,15 @@ for iCase = 1:numel(ResultSet.Cases)
         row.best_window_id = NaN;
         row.best_window_rmse_v = NaN;
         if isfield(R, 'JointEOSummary') && isstruct(R.JointEOSummary)
-            row.joint_eo = getfield_default_local(R.JointEOSummary, 'dominant_eo', NaN);
+            row.joint_eo = getfield_default_local(R.JointEOSummary, ...
+                'best_EO', getfield_default_local(R.JointEOSummary, 'dominant_eo', NaN));
             row.joint_eo_gap_ratio = getfield_default_local(R.JointEOSummary, 'gap_ratio', NaN);
             row.joint_eo_status = string(getfield_default_local(R.JointEOSummary, 'status', ''));
-            if isfinite(row.joint_eo) && any(isfinite(T.rot_freq_mean_hz))
+            if isfield(R, 'ResonanceSummary') && isstruct(R.ResonanceSummary) && ...
+                    isfield(R.ResonanceSummary, 'reported_freq_hz') && ...
+                    isfinite(R.ResonanceSummary.reported_freq_hz)
+                row.joint_freq_hz = R.ResonanceSummary.reported_freq_hz;
+            elseif isfinite(row.joint_eo) && any(isfinite(T.rot_freq_mean_hz))
                 row.joint_freq_hz = row.joint_eo .* mean(T.rot_freq_mean_hz(isfinite(T.rot_freq_mean_hz)), 'omitnan');
             end
         end
@@ -542,9 +633,82 @@ end
 end
 
 
+function [eta, info] = load_joint_static_eta_prior_local(cfg, S)
+sensors = S.analysis_sensors(:).';
+blade_id = S.target_blades(1);
+sensor_tag = ['S', sprintf('%d', sensors)];
+
+eta_file = '';
+if isfield(S, 'static_eta_file') && ~isempty(S.static_eta_file)
+    eta_file = char(S.static_eta_file);
+end
+if isempty(eta_file)
+    eta_file = fullfile(cfg.output_root, ...
+        'step05_joint_static_eta_preview', ...
+        sprintf('JointStaticEtaPreview_B%d_%s.mat', blade_id, sensor_tag));
+end
+if ~isfile(eta_file)
+    error(['Formal Step05 requires a joint static eta preview. ' ...
+        'Run Calibrate_Step05_JointStaticEta_FromPreview_20251222 first, ' ...
+        'or set STEP05_STATIC_ETA_FILE. Missing file: %s'], eta_file);
+end
+
+loaded = load(eta_file, 'Summary');
+if ~isfield(loaded, 'Summary')
+    error('Joint static eta file must contain Summary: %s', eta_file);
+end
+Summary = loaded.Summary;
+
+if isfield(Summary, 'TargetBlade') && double(Summary.TargetBlade) ~= blade_id
+    error('Joint static eta target blade mismatch: file B%d, requested B%d.', ...
+        double(Summary.TargetBlade), blade_id);
+end
+if isfield(Summary, 'SensorIDs') && ...
+        ~isequal(double(Summary.SensorIDs(:).'), sensors)
+    error('Joint static eta sensor mismatch: file %s, requested %s.', ...
+        mat2str(double(Summary.SensorIDs(:).')), mat2str(sensors));
+end
+if ~isfield(Summary, 'Consensus') || ...
+        ~isfield(Summary.Consensus, 'eta_median_mm')
+    error('Joint static eta file missing Summary.Consensus.eta_median_mm: %s', ...
+        eta_file);
+end
+
+eta = double(Summary.Consensus.eta_median_mm(:).');
+if numel(eta) ~= numel(sensors) || any(~isfinite(eta))
+    error('Invalid joint static eta vector in %s.', eta_file);
+end
+eta(1) = 0;
+
+plan_iqr = nan(size(eta));
+if isfield(Summary.Consensus, 'eta_plan_iqr_mm')
+    plan_iqr = double(Summary.Consensus.eta_plan_iqr_mm(:).');
+end
+if numel(plan_iqr) ~= numel(eta)
+    plan_iqr = nan(size(eta));
+end
+
+info = table(sensors(:), eta(:), plan_iqr(:), ...
+    repmat(string(eta_file), numel(sensors), 1), ...
+    'VariableNames', {'sensor_id', 'eta_prior_mm', ...
+    'eta_plan_iqr_mm', 'joint_static_eta_file'});
+end
+
+
 function Template = load_step04_template_local(cfg)
 if ~isfield(cfg, 'step04_output_dir') || isempty(cfg.step04_output_dir)
     cfg.step04_output_dir = fullfile(cfg.output_root, 'step04_low_speed_template');
+end
+
+template_override_file = strtrim(getenv('STEP05_TEMPLATE_OVERRIDE_FILE'));
+if ~isempty(template_override_file)
+    if ~isfile(template_override_file)
+        error('STEP05_TEMPLATE_OVERRIDE_FILE does not exist: %s', template_override_file);
+    end
+    loaded = load(template_override_file, 'Template');
+    Template = loaded.Template;
+    fprintf('Step04 template override: %s\n', template_override_file);
+    return;
 end
 
 sensor_tag = ['S', sprintf('%d', cfg.sensor_ids)];
@@ -626,14 +790,17 @@ end
 case_data = build_foundation_case_data_local( ...
     case_name, case_dir, DynamicPulseTable, ObservationTable, OPRTable, cfg, S);
 
-opr_times = OPRTable.opr_center_time_s(:);
+opr_times = resolve_step05_opr_reference_times_local(OPRTable, cfg, Template);
 opr_times = opr_times(isfinite(opr_times));
-if numel(opr_times) <= cfg.blades_num
-    error('Step02 OPRTable has too few valid OPR centers for %s.', case_name);
+opr_events_per_revolution = resolve_step05_opr_events_per_revolution_local( ...
+    cfg, Template, OPRTable, step02_metadata);
+if numel(opr_times) <= opr_events_per_revolution
+    error('Step02 OPRTable has too few valid OPR centers for %s with epr=%d.', ...
+        case_name, opr_events_per_revolution);
 end
 
 [F_omega_deg_s, speed_diag] = build_dynamic_speed_interpolant_local( ...
-    opr_times, cfg.blades_num);
+    opr_times, opr_events_per_revolution);
 
 blade_results = repmat(struct('blade_id', NaN, 'Result', []), ...
     numel(S.target_blades), 1);
@@ -680,7 +847,8 @@ for ib = 1:numel(S.target_blades)
     Result = run_single_blade_step05_local( ...
         case_name, case_dir, case_data, step02_metadata, ...
         opr_times, F_omega_deg_s, speed_diag, ...
-        Template, passes_by_sensor, WindowPlan, cfg, S, blade_id);
+        Template, passes_by_sensor, WindowPlan, cfg, S, blade_id, ...
+        opr_events_per_revolution);
 
     out_dir = fullfile(S.output_dir, case_name);
     fig_case_dir = fullfile(S.figure_dir, case_name);
@@ -694,14 +862,16 @@ for ib = 1:numel(S.target_blades)
     end
 
     sensor_tag = ['S', sprintf('%d', S.analysis_sensors)];
+    method_file_tag = getfield_default_local(S, ...
+        'method_file_tag', 'FoundationMainPulseAdaptiveNoEtaVoltageDecision');
 
     result_file = fullfile(out_dir, sprintf( ...
-        'Result_Step05_SingleSyncDirectTemplate_B%d_%s_%s.mat', ...
-        blade_id, sensor_tag, cfg.dataset));
+        'Result_Step05_%s_B%d_%s_%s.mat', ...
+        method_file_tag, blade_id, sensor_tag, cfg.dataset));
 
     trend_file = fullfile(out_dir, sprintf( ...
-        'Trend_Step05_SingleSyncDirectTemplate_B%d_%s_%s.csv', ...
-        blade_id, sensor_tag, cfg.dataset));
+        'Trend_Step05_%s_B%d_%s_%s.csv', ...
+        method_file_tag, blade_id, sensor_tag, cfg.dataset));
 
     save(result_file, 'Result', '-v7.3');
     writetable(Result.Trend, trend_file);
@@ -829,14 +999,18 @@ end
 function Result = run_single_blade_step05_local( ...
     case_name, case_dir, case_data, step02_metadata, ...
     opr_times, F_omega_deg_s, speed_diag, ...
-    Template, passes_by_sensor, WindowPlan, cfg, S, blade_id)
+    Template, passes_by_sensor, WindowPlan, cfg, S, blade_id, ...
+    opr_events_per_revolution)
 
 method = build_step05_method_metadata_local(S);
 
 trend_rows = repmat(make_empty_trend_row_local(), height(WindowPlan), 1);
 WindowResult = repmat(make_empty_window_result_local(), height(WindowPlan), 1);
+FinalBundleStore = cell(height(WindowPlan), 1);
+FinalSeedTableStore = cell(height(WindowPlan), 1);
 
-best = struct('weighted_voltage_rmse', inf);
+best = struct('weighted_voltage_rmse', inf, 'decision_score', inf);
+prev_phase_result = [];
 
 for iw = 1:height(WindowPlan)
     W = WindowPlan(iw, :);
@@ -849,7 +1023,8 @@ for iw = 1:height(WindowPlan)
     % ---------------------------------------------------------------------
     bundle_all = build_direct_bundle_for_window_local( ...
         case_dir, case_data, opr_times, F_omega_deg_s, ...
-        Template, passes_by_sensor, cfg, S, blade_id, W);
+        Template, passes_by_sensor, cfg, S, blade_id, W, ...
+        opr_events_per_revolution);
 
     bundle_all = attach_template_mini_records_local( ...
         bundle_all, Template, S.analysis_sensors, blade_id);
@@ -877,6 +1052,8 @@ for iw = 1:height(WindowPlan)
     % This is the conservative region smaller than Step04 x_domain.
     % ---------------------------------------------------------------------
     core_bundle = select_bundle_points_local(bundle_all, bundle_all.core_mask, S);
+    core_coverage = build_bundle_coverage_local(core_bundle, S);
+    core_bundle.Coverage = core_coverage;
 
     if core_bundle.point_count < S.min_fit_points
         warning('Window %d has too few query-safe core points (%d).', ...
@@ -884,24 +1061,44 @@ for iw = 1:height(WindowPlan)
 
         [trend_rows(iw), WindowResult(iw)] = make_failed_window_result_local( ...
             W, iw, bundle_all, 'too_few_query_safe_core_points');
+        trend_rows(iw) = attach_coverage_to_trend_row_local( ...
+            trend_rows(iw), core_coverage);
+        WindowResult(iw).CoreCoverage = core_coverage;
+        WindowResult(iw).CoreBundlePreview = ...
+            downsample_bundle_for_storage_local(core_bundle, ...
+            S.store_bundle_preview_points);
         continue;
     end
 
-    if core_bundle.valid_pass_count < S.min_valid_pass_count
-        warning('Window %d has too few valid core passes (%d).', ...
-            iw, core_bundle.valid_pass_count);
+    if ~core_coverage.ok
+        warning(['Window %d has insufficient valid core waveform coverage: %s ' ...
+            '(sensor-pass %d/%d, sensor %d/%d, lap %d/%d).'], ...
+            iw, core_coverage.failure_reason, ...
+            core_coverage.valid_pass_count, core_coverage.min_valid_pass_count, ...
+            core_coverage.valid_sensor_count, core_coverage.min_valid_sensor_count, ...
+            core_coverage.valid_lap_count, core_coverage.min_valid_lap_count);
 
         [trend_rows(iw), WindowResult(iw)] = make_failed_window_result_local( ...
-            W, iw, bundle_all, 'too_few_valid_core_passes');
+            W, iw, bundle_all, core_coverage.failure_reason);
+        trend_rows(iw) = attach_coverage_to_trend_row_local( ...
+            trend_rows(iw), core_coverage);
+        WindowResult(iw).CoreCoverage = core_coverage;
+        WindowResult(iw).CoreBundlePreview = ...
+            downsample_bundle_for_storage_local(core_bundle, ...
+            S.store_bundle_preview_points);
         continue;
     end
 
-    static_eta = estimate_static_sensor_eta_local(core_bundle, S);
+    static_eta = get_static_sensor_eta_local(core_bundle, S);
     core_bundle.static_sensor_eta = static_eta;
-    core_bundle.static_eta_source = 'template_static_voltage_alignment';
+    core_bundle.static_eta_source = S.static_eta_source;
 
-    seed_table_core = solve_vp_seed_eo_scan_local(core_bundle, eo_candidates, S);
-    final_eos_core = select_top_eos_local(seed_table_core, S.top_k_eo);
+    [core_vp_bundle, core_vp_info] = build_vp_screening_bundle_local( ...
+        bundle_all, bundle_all.core_mask, core_bundle, S, 'core_query_safe');
+
+    seed_table_core = solve_vp_seed_eo_scan_local(core_vp_bundle, eo_candidates, S);
+    [final_eos_core, eo_selection_core] = ...
+        select_eo_candidates_adaptive_local(seed_table_core, S);
 
     fit_core = refine_direct_template_fit_local( ...
         core_bundle, seed_table_core, final_eos_core, S);
@@ -909,44 +1106,70 @@ for iw = 1:height(WindowPlan)
     fit_core.fit_stage = 'core_query_safe';
     fit_core.core_point_count = core_bundle.point_count;
     fit_core.expanded_point_count = core_bundle.point_count;
+    fit_core.vp_point_count = core_vp_bundle.point_count;
+    fit_core.vp_screening_policy = core_vp_info.policy;
+    fit_core.vp_screening_fallback = core_vp_info.fallback_reason;
+    fit_core.EOSelectionInfo = eo_selection_core;
 
     % ---------------------------------------------------------------------
     % Second pass: deterministic phase-safe expansion.
     % Expanded points are selected by fitted x_query, not by fallback.
     % ---------------------------------------------------------------------
     expanded_bundle = [];
+    expanded_vp_bundle = [];
     seed_table_expanded = [];
     fit_expanded = [];
+    phase_ref = [];
+    expanded_vp_info = make_empty_vp_screening_info_local('phase_safe_expanded');
 
     expand_info = struct();
     expand_info.applied = false;
     expand_info.reason = 'disabled_or_not_applicable';
     expand_info.core_point_count = core_bundle.point_count;
+    expand_info.core_vp_point_count = core_vp_bundle.point_count;
     expand_info.expanded_point_count = NaN;
+    expand_info.expanded_vp_point_count = NaN;
     expand_info.chosen_pass = 'core_query_safe';
 
     if S.phase_safe_expansion && strcmpi(fit_core.status, 'ok')
-        phase_ref = fit_core;
+        [phase_ref, phase_ref_info] = resolve_phase_safe_reference_local( ...
+            prev_phase_result, fit_core, seed_table_core, iw, S);
 
         expanded_mask = build_phase_safe_expansion_mask_local( ...
             bundle_all, phase_ref, S);
 
         expanded_bundle = select_bundle_points_local(bundle_all, expanded_mask, S);
         expanded_bundle.static_sensor_eta = static_eta;
-        expanded_bundle.static_eta_source = 'template_static_voltage_alignment';
+        expanded_bundle.static_eta_source = S.static_eta_source;
+        expanded_coverage = build_bundle_coverage_local(expanded_bundle, S);
+        expanded_bundle.Coverage = expanded_coverage;
 
         expand_info.applied = true;
         expand_info.expanded_point_count = expanded_bundle.point_count;
-        expand_info.reason = 'phase_safe_from_core_current';
+        expand_info.expanded_valid_pass_count = expanded_coverage.valid_pass_count;
+        expand_info.expanded_valid_sensor_count = expanded_coverage.valid_sensor_count;
+        expand_info.expanded_valid_lap_count = expanded_coverage.valid_lap_count;
+        expand_info.reason = phase_ref_info.reason;
+        expand_info.reference_source = phase_ref_info.source;
+        expand_info.reference_window_id = phase_ref_info.window_id;
 
         if expanded_bundle.point_count >= S.min_fit_points && ...
-                expanded_bundle.valid_pass_count >= S.min_valid_pass_count
+                expanded_coverage.ok
+
+            [expanded_vp_bundle, expanded_vp_info] = build_vp_screening_bundle_local( ...
+                bundle_all, expanded_mask, expanded_bundle, S, 'phase_safe_expanded');
 
             seed_table_expanded = solve_vp_seed_eo_scan_local( ...
-                expanded_bundle, eo_candidates, S);
+                expanded_vp_bundle, eo_candidates, S);
 
-            final_eos_expanded = select_top_eos_local( ...
-                seed_table_expanded, S.top_k_eo);
+            [final_eos_expanded, eo_selection_expanded] = ...
+                select_eo_candidates_adaptive_local(seed_table_expanded, S);
+            expand_info.expanded_eo_policy = 'phase_reference_selects_points_only_adaptive_full_fit';
+            expand_info.expanded_eo_candidates = final_eos_expanded(:).';
+            expand_info.ExpandedEOSelectionInfo = eo_selection_expanded;
+            expand_info.expanded_vp_point_count = expanded_vp_bundle.point_count;
+            expand_info.expanded_vp_policy = expanded_vp_info.policy;
+            expand_info.expanded_vp_fallback = expanded_vp_info.fallback_reason;
 
             fit_expanded = refine_direct_template_fit_local( ...
                 expanded_bundle, seed_table_expanded, final_eos_expanded, S);
@@ -954,9 +1177,15 @@ for iw = 1:height(WindowPlan)
             fit_expanded.fit_stage = 'phase_safe_expanded';
             fit_expanded.core_point_count = core_bundle.point_count;
             fit_expanded.expanded_point_count = expanded_bundle.point_count;
+            fit_expanded.vp_point_count = expanded_vp_bundle.point_count;
+            fit_expanded.vp_screening_policy = expanded_vp_info.policy;
+            fit_expanded.vp_screening_fallback = expanded_vp_info.fallback_reason;
+            fit_expanded.EOSelectionInfo = eo_selection_expanded;
         else
-            expand_info.reason = 'phase_safe_too_few_points';
+            expand_info.reason = 'phase_safe_insufficient_coverage';
         end
+    else
+        expanded_coverage = [];
     end
 
     % ---------------------------------------------------------------------
@@ -971,6 +1200,35 @@ for iw = 1:height(WindowPlan)
     result.window_id = iw;
     result.lap_range = [W.lap_start, W.lap_end];
     result.time_window_s = [W.time_start_s, W.time_end_s];
+    result.CoreEO = getfield_default_local(fit_core, 'EO_id', NaN);
+    result.ExpandedEO = getfield_default_local(fit_expanded, 'EO_id', NaN);
+    result.PhaseReferenceEO = getfield_default_local(phase_ref, 'EO_id', NaN);
+    result.FinalEOChangedAfterExpansion = ...
+        isfinite(result.CoreEO) && isfinite(result.ExpandedEO) && ...
+        result.ExpandedEO ~= result.CoreEO;
+    if strcmpi(result.fit_stage, 'phase_safe_expanded') && ...
+            isfield(expand_info, 'ExpandedEOSelectionInfo')
+        result.EOSelectionInfo = expand_info.ExpandedEOSelectionInfo;
+    else
+        result.EOSelectionInfo = eo_selection_core;
+    end
+    result.CoreVPPointCount = core_vp_bundle.point_count;
+    result.CoreVPPolicy = string(core_vp_info.policy);
+    result.CoreVPFallback = string(core_vp_info.fallback_reason);
+    result.ExpandedVPPointCount = get_bundle_point_count_local(expanded_vp_bundle);
+    result.ExpandedVPPolicy = string(getfield_default_local( ...
+        expanded_vp_info, 'policy', ''));
+    result.ExpandedVPFallback = string(getfield_default_local( ...
+        expanded_vp_info, 'fallback_reason', ''));
+    if strcmpi(result.fit_stage, 'phase_safe_expanded') && ~isempty(expanded_vp_bundle)
+        result.VPPointCount = expanded_vp_bundle.point_count;
+        result.VPPolicy = string(expanded_vp_info.policy);
+        result.VPFallback = string(expanded_vp_info.fallback_reason);
+    else
+        result.VPPointCount = core_vp_bundle.point_count;
+        result.VPPolicy = string(core_vp_info.policy);
+        result.VPFallback = string(core_vp_info.fallback_reason);
+    end
     result.VPSeedTable = struct2table(final_seed_table);
     result.BundleSummary = summarize_bundle_local(final_bundle, bundle_all);
     result.ReconstructionPreview = build_reconstruction_preview_local( ...
@@ -985,6 +1243,9 @@ for iw = 1:height(WindowPlan)
     WindowResult(iw).CoreResult = fit_core;
     WindowResult(iw).ExpandedResult = fit_expanded;
     WindowResult(iw).ExpansionInfo = expand_info;
+    WindowResult(iw).EOSelectionInfo = eo_selection_core;
+    WindowResult(iw).CoreCoverage = core_coverage;
+    WindowResult(iw).ExpandedCoverage = expanded_coverage;
 
     WindowResult(iw).BundlePreview = ...
         downsample_bundle_for_storage_local(final_bundle, ...
@@ -1003,9 +1264,24 @@ for iw = 1:height(WindowPlan)
     WindowResult(iw).CorePointCount = core_bundle.point_count;
     WindowResult(iw).CandidatePointCount = bundle_all.point_count;
     WindowResult(iw).SeedTable = final_seed_table;
+    FinalBundleStore{iw} = final_bundle;
+    FinalSeedTableStore{iw} = final_seed_table;
 
-    if strcmpi(result.status, 'ok') && ...
-            result.weighted_voltage_rmse < best.weighted_voltage_rmse
+    if isfield(result, 'status') && strcmpi(result.status, 'ok')
+        prev_phase_result = result;
+    else
+        prev_phase_result = [];
+    end
+
+    result_best_score = getfield_default_local(result, ...
+        'decision_score', result.weighted_voltage_rmse);
+    current_best_score = getfield_default_local(best, ...
+        'decision_score', best.weighted_voltage_rmse);
+
+    if strcmpi(result.status, 'ok') && isfinite(result_best_score) && ...
+            (result_best_score < current_best_score || ...
+             (abs(result_best_score - current_best_score) <= eps(max(abs(current_best_score), 1)) && ...
+              result.weighted_voltage_rmse < best.weighted_voltage_rmse))
 
         best = result;
         best.window_id = iw;
@@ -1028,6 +1304,22 @@ for iw = 1:numel(trend_rows)
     trend_rows(iw).sensor_tag = string(sensor_tag);
 end
 
+JointEOSummary = build_joint_eo_summary_local(WindowResult, S);
+JointReportedRefit = make_empty_joint_reported_refit_summary_local();
+
+if S.joint_reported_refit_enable
+    [trend_rows, WindowResult, best, JointReportedRefit] = ...
+        apply_joint_reported_eo_refit_local( ...
+        trend_rows, WindowResult, FinalBundleStore, FinalSeedTableStore, ...
+        WindowPlan, JointEOSummary, best, S);
+
+    for iw = 1:numel(trend_rows)
+        trend_rows(iw).case_name = string(case_name);
+        trend_rows(iw).blade_id = blade_id;
+        trend_rows(iw).sensor_tag = string(sensor_tag);
+    end
+end
+
 Trend = struct2table(trend_rows);
 
 Result = struct();
@@ -1048,7 +1340,8 @@ Result.WindowPlan = WindowPlan;
 Result.Trend = Trend;
 Result.WindowResult = WindowResult;
 Result.BestWindow = best;
-Result.JointEOSummary = build_joint_eo_summary_local(WindowResult, S);
+Result.JointEOSummary = JointEOSummary;
+Result.JointReportedRefit = JointReportedRefit;
 Result.ResonanceSummary = build_resonance_summary_local(Trend, Result.JointEOSummary);
 end
 
@@ -1065,29 +1358,42 @@ end
 
 function method = build_step05_method_metadata_local(S)
 method = struct();
-method.name = 'Step05_single_sync_direct_template_OPRCenterStd_querysafe_twostage_fullraw';
+method.name = S.method_name;
 method.version = S.version;
 method.outer_workflow = 'Step5_SingleSync style sliding-window single-synchronous identification';
 method.solver = 'OPRCenterStd low-speed non-parametric direct-template waveform inversion';
-method.forward_model = 'V = T_{s,b}(x - dx_c - eta_s - A*sin(EO*theta + phi))';
+if isfield(S, 'active_eta_model') && strcmpi(S.active_eta_model, 'none')
+    method.forward_model = 'V = T_{s,b}(x - dx_c - A*sin(EO*theta + phi))';
+else
+    method.forward_model = 'V = T_{s,b}(x - dx_c - eta_s - A*sin(EO*theta + phi))';
+end
 method.objective_mode = S.objective_mode;
 method.core_mask_mode = S.core_mask_mode;
 method.query_guard_mode = S.query_guard_mode;
+method.vp_bundle_mode = S.vp_bundle_mode;
+method.vp_rank_score_mode = getfield_default_local( ...
+    S, 'vp_rank_score_mode', 'linear_residual');
+method.vp_fit_bundle_split = ['VP scans all EO on the same eligible main-pulse/query-safe bundle; ' ...
+    'adaptive EO candidates enter full nonlinear waveform refinement'];
 method.eo_low_gap_ratio_threshold = S.eo_low_gap_ratio_threshold;
 if S.vp_include_sensor_eta
-    method.vp_seed_model = 'V - T(x) = -Tprime(x) * [dx_c + eta_s + a*sin(EO*theta) + b*cos(EO*theta)]';
+    method.vp_seed_model = 'q=-(V-T)/Tprime = dx_c + eta_s + a*sin(EO*theta) + b*cos(EO*theta)';
+elseif ~isfield(S, 'active_eta_model') || strcmpi(S.active_eta_model, 'none')
+    method.vp_seed_model = 'q=-(V-T)/Tprime = dx_c + a*sin(EO*theta) + b*cos(EO*theta)';
 else
-    method.vp_seed_model = 'V - T(x) = -Tprime(x) * [dx_c + a*sin(EO*theta) + b*cos(EO*theta)]';
+    method.vp_seed_model = 'q=-(V-T)/Tprime - eta_s = dx_c + a*sin(EO*theta) + b*cos(EO*theta)';
 end
-if isfinite(S.top_k_eo)
-    method.eo_selection = sprintf('top-%d VP candidates then full waveform objective', S.top_k_eo);
-else
-    method.eo_selection = 'all finite EO candidates enter full waveform objective; no EO prior and no top-k pruning';
-end
-method.frequency_decision = ['single-window EO is rejected when the candidate gap is too small; ' ...
-    'final frequency is reported from the multi-window joint EO objective summary'];
-method.frequency_output_policy = ['report mean_freq_hz only when joint_eo_status is ok; ' ...
-    'when joint_eo_status is ambiguous, keep candidate diagnostics and leave final frequency as NaN'];
+method.eo_selection = sprintf(['adaptive_full_fit: VP all EO, retain top-%d minimum, ' ...
+    'always protect top-rank-%d, near-best gap <= %.3g, neighbors radius=%d, capped at %d full-fit EO'], ...
+    S.vp_top_k_min, getfield_default_local(S, 'vp_top_rank_keep', S.vp_top_k_min), ...
+    S.vp_gap_ratio_keep, S.neighbor_eo_radius, ...
+    max(S.vp_top_k_max, getfield_default_local(S, 'vp_top_rank_keep', S.vp_top_k_max)));
+method.eo_decision_score_mode = getfield_default_local( ...
+    S, 'eo_decision_score_mode', 'weighted_voltage_rmse');
+method.frequency_decision = ['single-window EO uses gradient-displacement VP seeds, ' ...
+    'then selects EO by full-waveform voltage RMSE refinement; static inversion residual is not the formal EO decision score'];
+method.frequency_output_policy = ['ResonanceSummary.reported_eo uses the joint EO summary first; ' ...
+    'Trend mode is retained as a diagnostic fallback'];
 method.parameter_constraints = sprintf(['A limit=%s, dx_c limit=%s, eta limit=%s, ' ...
     'eta regularization=%g, overshoot penalty=%g'], ...
     numeric_limit_text_local(S.amplitude_limit_mm), ...
@@ -1098,8 +1404,26 @@ method.template_domain_validity_protection = sprintf([ ...
     'invalid query penalty scale=%g; this protects template-domain coverage ' ...
     'and is not an EO prior or a physical parameter bound'], ...
     S.invalid_query_penalty_scale);
-method.eta_gauge = sprintf('eta_s fixed to zero for CH%d', S.analysis_sensors(1));
-method.no_template_center_subtraction = true;
+method.eta_model_policy = S.eta_model_policy;
+method.eta_models = S.eta_models;
+method.static_eta_source = getfield_default_local(S, 'static_eta_source', '');
+method.sensor_eta_prior_mm = getfield_default_local(S, 'sensor_eta_prior_mm', []);
+if isfield(S, 'active_eta_model') && strcmpi(S.active_eta_model, 'none')
+    method.eta_gauge = sprintf('formal model is NoEta; eta_s is zero for all CH, reference CH%d retained for diagnostics', S.analysis_sensors(1));
+else
+    method.eta_gauge = sprintf('eta_s fixed to zero for reference CH%d; other CH use external static eta prior', S.analysis_sensors(1));
+end
+method.opr_events_per_revolution_policy = 'explicit dataset fact resolved from Template/Step02/OPRTable fallback';
+method.opr_timing_reference_policy = 'Step04 Template and Step02 OPR reference time must use the same configured OPR reference';
+method.query_safe_policy = 'official route requires Step04 x_query_safe_domain; invalid query-safe domain is a template-contract error';
+method.core_point_policy = 'finite & main_pulse & inside_domain & inside_query_guard';
+method.frequency_policy = 'gradient-displacement VP all-EO scan, adaptive full nonlinear refinement';
+method.parameter_bound_policy = 'formal A and dx_c bounds are enforced during objective evaluation and reporting; eta_s is not fitted in the main route';
+method.phase_safe_policy = ['phase reference only selects phase-safe expanded points; ' ...
+    'expanded pass reruns VP all-EO/adaptive full-waveform RMSE, so phase reference is not an EO prior'];
+method.template_center_subtraction = true;
+method.no_template_center_subtraction = false;
+method.x_coordinate_policy = 'x_abs = OPRCenterStd mapped coordinate; x = x_abs - tpl.xc';
 method.no_sensor_affine_voltage_projection = true;
 method.no_within_pulse_uniform_downsampling = true;
 method.core_mask_mode = S.core_mask_mode;
@@ -1133,13 +1457,208 @@ end
 end
 
 
-function [F_omega_deg_s, diagnostic] = build_dynamic_speed_interpolant_local(opr_times, blades_num)
+function validate_step05_template_contract_local(Template, cfg, S)
+required_top = {'SensorBlade', 'Standard_Relative_Angles', ...
+    'SchemaVersion', 'Final_Template_Point_Policy'};
+for i = 1:numel(required_top)
+    if ~isfield(Template, required_top{i})
+        error('Step05:TemplateContract', ...
+            'Step04 Template missing required field: %s.', required_top{i});
+    end
+end
+
+if ~strcmp(string(Template.SchemaVersion), "LowSpeedOPRCenterStdTemplate/v1")
+    error('Step05:TemplateContract', ...
+        ['Step04 Template.SchemaVersion must be ' ...
+         'LowSpeedOPRCenterStdTemplate/v1, but got %s.'], ...
+        char(string(Template.SchemaVersion)));
+end
+
+if ~strcmp(string(Template.Final_Template_Point_Policy), ...
+        "trusted_domain_recalibration")
+    error('Step05:TemplateContract', ...
+        ['Step04 Template.Final_Template_Point_Policy must be ' ...
+         'trusted_domain_recalibration, but got %s.'], ...
+        char(string(Template.Final_Template_Point_Policy)));
+end
+
+if ~isfield(Template, 'OPR_Events_Per_Revolution') && ...
+        ~isfield(Template, 'opr_events_per_revolution')
+    error('Step05:TemplateContract', ...
+        'Step04 Template missing OPR events/revolution metadata.');
+end
+
+template_epr = resolve_step05_opr_events_per_revolution_local( ...
+    cfg, Template, table(), struct());
+if strcmp(string(cfg.dataset), "20251222") && template_epr ~= 6
+    error('Step05:OPRSemantics', ...
+        '20251222 should use 6 OPR events/rev, but Template has %g.', ...
+        template_epr);
+end
+
+angle_size = size(Template.Standard_Relative_Angles);
+if numel(angle_size) < 2 || angle_size(2) < max(S.target_blades)
+    error('Step05:TemplateContract', ...
+        'Template.Standard_Relative_Angles does not cover requested sensors/blades.');
+end
+
+for sid = S.analysis_sensors
+    for blade_id = S.target_blades
+        get_standard_angle_local(Template, sid, blade_id);
+
+        tpl = get_template_entry_local(Template, sid, blade_id);
+        if isempty(tpl)
+            error('Step05:TemplateContract', ...
+                'Missing Step04 template for CH%d Blade%d.', sid, blade_id);
+        end
+
+        if ~isfield(tpl, 'x_domain') || numel(tpl.x_domain) ~= 2 || ...
+                any(~isfinite(tpl.x_domain)) || tpl.x_domain(2) <= tpl.x_domain(1)
+            error('Step05:TemplateContract', ...
+                'Template CH%d Blade%d has invalid x_domain.', sid, blade_id);
+        end
+
+        xc = get_template_xcenter_local(tpl);
+        if ~isfinite(xc)
+            error('Step05:TemplateContract', ...
+                'Template CH%d Blade%d has invalid center xc.', sid, blade_id);
+        end
+
+        if ~isfield(tpl, 'x_query_safe_domain') || ...
+                numel(tpl.x_query_safe_domain) ~= 2 || ...
+                any(~isfinite(tpl.x_query_safe_domain)) || ...
+                tpl.x_query_safe_domain(2) <= tpl.x_query_safe_domain(1)
+            error('Step05:TemplateContract', ...
+                ['Official Step05 requires valid Step04 x_query_safe_domain ' ...
+                 'for CH%d Blade%d when query_guard_mode=step04. ' ...
+                 'Re-run unified Step04 before identification.'], ...
+                sid, blade_id);
+        end
+    end
+end
+end
+
+
+function epr = resolve_step05_opr_events_per_revolution_local( ...
+    cfg, Template, OPRTable, step02_metadata)
+epr = NaN;
+
+if isstruct(Template)
+    names = {'OPR_Events_Per_Revolution', 'opr_events_per_revolution', ...
+        'OPR_Pulses_Per_Rev', 'opr_pulses_per_rev'};
+    epr = first_scalar_field_value_local(Template, names);
+end
+
+if ~isfinite(epr) && isstruct(step02_metadata)
+    names = {'OPR_Events_Per_Revolution', 'opr_events_per_revolution', ...
+        'OPREventsPerRevolution', 'OPR_Pulses_Per_Rev', 'opr_pulses_per_rev'};
+    epr = first_scalar_field_value_local(step02_metadata, names);
+end
+
+if ~isfinite(epr) && istable(OPRTable) && ...
+        ismember('opr_events_per_revolution', OPRTable.Properties.VariableNames)
+    v = OPRTable.opr_events_per_revolution;
+    v = v(isfinite(v));
+    if ~isempty(v)
+        epr = mode(v);
+    end
+end
+
+if ~isfinite(epr)
+    switch string(cfg.dataset)
+        case "20241106"
+            epr = 1;
+        case {"20250527", "20251222"}
+            epr = 6;
+        otherwise
+            error('Cannot resolve OPR events per revolution for dataset %s.', ...
+                cfg.dataset);
+    end
+end
+
+if epr <= 0 || abs(epr - round(epr)) > 1e-9
+    error('Invalid OPR events per revolution: %g.', epr);
+end
+
+epr = round(epr);
+end
+
+
+function v = first_scalar_field_value_local(s, names)
+v = NaN;
+for i = 1:numel(names)
+    name = names{i};
+    if isfield(s, name) && isnumeric(s.(name)) && ...
+            isscalar(s.(name)) && isfinite(s.(name))
+        v = s.(name);
+        return;
+    end
+end
+end
+
+function opr_times = resolve_step05_opr_reference_times_local(OPRTable, cfg, Template)
+if ismember('opr_reference_time_s', OPRTable.Properties.VariableNames)
+    opr_times = OPRTable.opr_reference_time_s;
+    source = "opr_reference_time_s";
+    template_method = getfield_default_local(Template, 'OPR_Timing_Method', '');
+    if ~isempty(template_method)
+        method = lower(strtrim(string(template_method)));
+        expects_rising = any(method == ["threshold_rising_edge", "rising_edge", "start_edge"]);
+        if expects_rising && ismember('opr_center_time_s', OPRTable.Properties.VariableNames) && ...
+                isequal(opr_times, OPRTable.opr_center_time_s)
+            error('Step05:OPRReferenceMismatch', ...
+                ['Template uses %s, but Step02 opr_reference_time_s equals center time. ' ...
+                 'Re-run Step02 with cfg.opr_timing_reference=''rising_edge''.'], ...
+                char(string(template_method)));
+        end
+    end
+    return;
+end
+
+ref = lower(strtrim(string(getfield_default_local(cfg, ...
+    'opr_timing_reference', 'rising_edge'))));
+if any(ref == ["rising_edge", "start_edge", "start", "threshold_rising_edge"]) && ...
+        ismember('opr_start_time_s', OPRTable.Properties.VariableNames)
+    opr_times = OPRTable.opr_start_time_s;
+    source = "opr_start_time_s";
+elseif any(ref == ["center", "opr_center", "pulse_center", "multi_threshold_width_center"]) && ...
+        ismember('opr_center_time_s', OPRTable.Properties.VariableNames)
+    opr_times = OPRTable.opr_center_time_s;
+    source = "opr_center_time_s";
+elseif any(ref == ["falling_edge", "end_edge", "end"]) && ...
+        ismember('opr_end_time_s', OPRTable.Properties.VariableNames)
+    opr_times = OPRTable.opr_end_time_s;
+    source = "opr_end_time_s";
+elseif ismember('opr_start_time_s', OPRTable.Properties.VariableNames)
+    opr_times = OPRTable.opr_start_time_s;
+    source = "opr_start_time_s";
+else
+    opr_times = OPRTable.opr_center_time_s;
+    source = "opr_center_time_s";
+end
+
+template_method = getfield_default_local(Template, 'OPR_Timing_Method', '');
+if ~isempty(template_method)
+    method = lower(strtrim(string(template_method)));
+    expects_rising = any(method == ["threshold_rising_edge", "rising_edge", "start_edge"]);
+    if expects_rising && source == "opr_center_time_s"
+        error('Step05:OPRReferenceMismatch', ...
+            ['Template uses %s, but Step02 OPRTable has no usable rising/reference time column. ' ...
+             'Re-run Step02 with cfg.opr_timing_reference=''rising_edge''.'], ...
+            char(string(template_method)));
+    end
+end
+end
+
+
+function [F_omega_deg_s, diagnostic] = build_dynamic_speed_interpolant_local( ...
+    opr_times, opr_events_per_revolution)
 opr_times = opr_times(:);
+epr = opr_events_per_revolution;
 
-rev_period = opr_times((blades_num + 1):end) - ...
-             opr_times(1:(end - blades_num));
+rev_period = opr_times((epr + 1):end) - opr_times(1:(end - epr));
 
-speed_time = opr_times(1:(end - blades_num));
+speed_time = 0.5 .* (opr_times((epr + 1):end) + opr_times(1:(end - epr)));
 speed_deg_s = 360 ./ max(rev_period, eps);
 
 valid = isfinite(speed_time) & isfinite(speed_deg_s) & speed_deg_s > 0;
@@ -1153,9 +1672,12 @@ F_omega_deg_s = griddedInterpolant( ...
     'linear', 'nearest');
 
 diagnostic = struct();
+diagnostic.opr_events_per_revolution = epr;
 diagnostic.speed_time_s = speed_time(valid);
 diagnostic.speed_deg_s = speed_deg_s(valid);
 diagnostic.rpm = speed_deg_s(valid) / 360 * 60;
+diagnostic.rev_period_s = rev_period(valid);
+diagnostic.median_rpm = median(diagnostic.rpm, 'omitnan');
 end
 
 
@@ -1239,7 +1761,8 @@ end
 
 function bundle = build_direct_bundle_for_window_local( ...
     case_dir, case_data, opr_times, F_omega_deg_s, ...
-    Template, passes_by_sensor, cfg, S, blade_id, W)
+    Template, passes_by_sensor, cfg, S, blade_id, W, ...
+    opr_events_per_revolution)
 
 bundle = make_empty_bundle_local();
 
@@ -1300,12 +1823,12 @@ for sid = S.analysis_sensors
         %    Every sample in one pulse segment uses the OPR immediately
         %    before the blade passage time as angular reference.
         % -------------------------------------------------------------
-        theta_std_deg = Template.Standard_Relative_Angles(sid, blade_id);
+        theta_std_deg = get_standard_angle_local(Template, sid, blade_id);
 
         [x_mm, theta_rad, prev_opr_idx, keep] = ...
             map_dynamic_times_to_oprcenterstd_local( ...
             t_seg, opr_times, F_omega_deg_s, ...
-            theta_std_deg, cfg, p.arrival_s);
+            theta_std_deg, cfg, p.arrival_s, opr_events_per_revolution);
 
         t_seg = t_seg(keep);
         v_seg = v_seg(keep);
@@ -1345,16 +1868,20 @@ for sid = S.analysis_sensors
         dynamic_effective = build_dynamic_effective_mask_local( ...
             v_seg, dVdt, template_dv_dx, tpl, S);
 
+        sensor_threshold = get_step05_sensor_threshold_local(cfg, sid, tpl, S);
         main_pulse_mask = build_main_pulse_mask_local( ...
-            t_seg, v_seg, S);
+            t_seg, v_seg, S, sensor_threshold);
 
         % -------------------------------------------------------------
         % 5. Query-safe shrink.
         %    Since final query coordinate is:
-        %       x_query = x - dx_c - eta_s - A*sin(...)
+        %       x_query = x - dx_c - A*sin(...)
         %    the first/core pass must use a smaller region than x_domain.
         % -------------------------------------------------------------
         base_for_guard = finite_mask & inside_domain;
+        if any(strcmpi(S.core_mask_mode, {'legacy_base', 'legacy_base_query_safe'}))
+            base_for_guard = base_for_guard & dynamic_effective & main_pulse_mask;
+        end
 
         [query_safe_domain, query_guard, query_guard_source] = ...
             resolve_query_safe_domain_local(x_mm, v_seg, tpl, S, base_for_guard);
@@ -1384,11 +1911,19 @@ for sid = S.analysis_sensors
 
                 core_mask = base_mask & inside_guard;
 
+            case 'sg_threshold_mainpulse_trust'
+                % SG Step5-compatible core contract:
+                % threshold-isolated main pulse inside the Step04 template
+                % trust domain. Query-safe shrink is a diagnostic here; it
+                % must not change the EO objective relative to the SG route.
+                core_mask = finite_mask & inside_domain & main_pulse_mask;
+
             otherwise
                 % Main deterministic route for the paper:
-                % complete mapped high-speed waveform inside the query-safe
+                % complete per-pass main pulse inside the query-safe
                 % shrunken trusted domain.
-                core_mask = finite_mask & inside_domain & inside_guard;
+                core_mask = finite_mask & inside_domain & inside_guard & ...
+                            main_pulse_mask;
         end
 
         n = numel(x_mm);
@@ -1624,7 +2159,8 @@ end
 
 
 function [x_mm, theta_rad, prev_opr_idx, keep] = map_dynamic_times_to_oprcenterstd_local( ...
-    t, opr_times, F_omega_deg_s, theta_std_deg, cfg, t_peak)
+    t, opr_times, F_omega_deg_s, theta_std_deg, cfg, t_peak, ...
+    opr_events_per_revolution)
 
 % Match the original OPRCenterStd DynamicMap route:
 % every sample in one pulse segment uses the OPR center immediately before
@@ -1657,7 +2193,7 @@ theta_rel_deg = wrap_to_180_local(theta_actual_deg - theta_std_deg);
 x_mm = theta_rel_deg .* (pi / 180) .* cfg.r_tip_mm;
 
 theta_rad = map_time_to_rotor_phase_local( ...
-    opr_times, t, cfg.blades_num);
+    opr_times, t, opr_events_per_revolution);
 
 prev_opr_idx(:) = idx_ref;
 
@@ -1684,15 +2220,18 @@ theta_points_deg = theta_base + theta_rel;
 end
 
 
-function theta_rot = map_time_to_rotor_phase_local(opr_times, sample_times, num_blades)
+function theta_rot = map_time_to_rotor_phase_local( ...
+    opr_times, sample_times, opr_events_per_revolution)
 sample_times = sample_times(:);
 theta_rot = nan(size(sample_times));
 
-if numel(opr_times) <= num_blades
+epr = opr_events_per_revolution;
+
+if numel(opr_times) <= epr
     return;
 end
 
-rev_anchor_times = opr_times(1:num_blades:end);
+rev_anchor_times = opr_times(1:epr:end);
 rev_anchor_times = rev_anchor_times(:);
 
 rev_phase = 2*pi*(0:numel(rev_anchor_times)-1).';
@@ -1714,19 +2253,20 @@ function [template_v, template_dv_dx, template_weight, inside_domain] = ...
     evaluate_template_at_points_local(tpl, x, S)
 
 x = x(:);
+interp_method = getfield_default_local(S, 'template_interp_method', 'pchip');
 
 template_v = interp1( ...
     tpl.x_grid(:), ...
     tpl.v_grid(:), ...
     x, ...
-    'linear', ...
+    interp_method, ...
     NaN);
 
 template_dv_dx = interp1( ...
     tpl.x_grid(:), ...
     tpl.dv_dx(:), ...
     x, ...
-    'linear', ...
+    interp_method, ...
     NaN);
 
 if isfield(tpl, 'weight_grid') && ~isempty(tpl.weight_grid)
@@ -1756,6 +2296,42 @@ t = t(:);
 v = v(:);
 x = x(:);
 template_weight = template_weight(:);
+
+if strcmpi(S.fit_weight_mode, 'sg_edge_only')
+    w_edge = build_edge_weight_step05_local(t, v, S.weight_floor);
+    w_total = max(S.weight_floor, w_edge);
+    if max(w_total) > 0
+        w_total = max(S.weight_floor, w_total ./ max(w_total));
+    end
+    parts = struct( ...
+        'edge', w_edge, ...
+        'domain', ones(size(x)), ...
+        'query', ones(size(x)), ...
+        'gradient', ones(size(x)));
+    return;
+end
+
+if strcmpi(S.fit_weight_mode, 'sg_edge_template')
+    w_edge = build_edge_weight_step05_local(t, v, S.weight_floor);
+    w_template = template_weight;
+    w_template(~isfinite(w_template)) = S.weight_floor;
+    w_template = max(w_template, S.weight_floor);
+    if max(w_template) > 0
+        w_template = max(S.weight_floor, w_template ./ max(w_template));
+    end
+
+    w_total = max(S.weight_floor, w_edge .* w_template);
+    if max(w_total) > 0
+        w_total = max(S.weight_floor, w_total ./ max(w_total));
+    end
+
+    parts = struct( ...
+        'edge', w_edge, ...
+        'domain', ones(size(x)), ...
+        'query', ones(size(x)), ...
+        'gradient', ones(size(x)));
+    return;
+end
 
 if ~strcmpi(S.fit_weight_mode, 'legacy_product')
     w_total = template_weight;
@@ -1906,6 +2482,9 @@ peak_level = prctile(v_finite, peak_q);
 
 if isfield(tpl, 'threshold') && ~isempty(tpl.threshold) && isfinite(tpl.threshold)
     threshold = tpl.threshold;
+elseif isfield(S, 'default_sensor_threshold') && ...
+        ~isempty(S.default_sensor_threshold) && isfinite(S.default_sensor_threshold)
+    threshold = S.default_sensor_threshold;
 else
     threshold = -inf;
 end
@@ -1928,14 +2507,30 @@ end
 end
 
 
-function mask = build_main_pulse_mask_local(t, v, S)
+function mask = build_main_pulse_mask_local(t, v, S, threshold_override)
 % Diagnostic mask only in the main query-safe route.
 t = t(:); %#ok<NASGU>
 v = v(:);
 
+if nargin < 4 || isempty(threshold_override) || ~isfinite(threshold_override)
+    threshold_override = NaN;
+end
+
 mask = true(size(v));
 
 if ~strcmpi(S.pulse_mode, 'single') || numel(v) < 5
+    return;
+end
+
+if isfield(S, 'main_pulse_mode') && strcmpi(S.main_pulse_mode, 'legacy_threshold')
+    threshold = threshold_override;
+    if ~isfinite(threshold)
+        threshold = S.default_sensor_threshold;
+    end
+    if ~isfinite(threshold)
+        threshold = 0.5;
+    end
+    mask = isolate_legacy_main_pulse_by_threshold_local(v, threshold);
     return;
 end
 
@@ -1989,6 +2584,95 @@ mask(a:b) = true;
 end
 
 
+function mask = isolate_legacy_main_pulse_by_threshold_local(v, threshold)
+mask = false(size(v));
+idx = find(v > threshold);
+
+if isempty(idx)
+    [~, imax] = max(v);
+    span = max(5, round(numel(v) * 0.15));
+    mask(max(1, imax - span):min(numel(v), imax + span)) = true;
+    return;
+end
+
+jumps = find(diff(idx) > 3);
+starts = [1; jumps + 1];
+ends = [jumps; numel(idx)];
+
+if isscalar(starts)
+    mask(idx(starts(1)):idx(ends(1))) = true;
+    return;
+end
+
+segment_gap = idx(starts(2:end)) - idx(ends(1:end-1));
+large_gap_threshold = max(10, round(0.02 * numel(v)));
+pulse_breaks = find(segment_gap > large_gap_threshold);
+group_starts = [1; pulse_breaks + 1];
+group_ends = [pulse_breaks; numel(starts)];
+
+for ig = 1:numel(group_starts)
+    seg_ids = group_starts(ig):group_ends(ig);
+    best_seg = seg_ids(1);
+    best_peak = -inf;
+
+    for iseg = seg_ids
+        seg = idx(starts(iseg):ends(iseg));
+        peak_val = max(v(seg), [], 'omitnan');
+
+        if peak_val > best_peak
+            best_peak = peak_val;
+            best_seg = iseg;
+        end
+    end
+
+    mask(idx(starts(best_seg)):idx(ends(best_seg))) = true;
+end
+end
+
+
+function threshold = get_step05_sensor_threshold_local(cfg, sid, tpl, S)
+threshold = NaN;
+
+if isfield(tpl, 'threshold') && ~isempty(tpl.threshold) && ...
+        isfinite(tpl.threshold)
+    threshold = tpl.threshold;
+    return;
+end
+
+if isfield(cfg, 'sensor_thresholds')
+    st = cfg.sensor_thresholds;
+    if isa(st, 'containers.Map')
+        key_candidates = {sid, double(sid), char(string(sid)), string(sid)};
+        for i = 1:numel(key_candidates)
+            try
+                if isKey(st, key_candidates{i})
+                    threshold = st(key_candidates{i});
+                    break;
+                end
+            catch
+            end
+        end
+    elseif isnumeric(st) && numel(st) >= sid && isfinite(st(sid))
+        threshold = st(sid);
+    end
+end
+
+if ~isfinite(threshold) && isfield(cfg, 'sensor_threshold_default') && ...
+        isfinite(cfg.sensor_threshold_default)
+    threshold = cfg.sensor_threshold_default;
+end
+
+if ~isfinite(threshold) && isfield(S, 'default_sensor_threshold') && ...
+        isfinite(S.default_sensor_threshold)
+    threshold = S.default_sensor_threshold;
+end
+
+if ~isfinite(threshold)
+    threshold = 0.5;
+end
+end
+
+
 function cc = contiguous_regions_local(mask)
 mask = mask(:);
 
@@ -2014,7 +2698,10 @@ function [query_safe_domain, query_guard, source] = resolve_query_safe_domain_lo
 % Step05 uses that domain by default; adaptive/fixed guards remain available
 % as explicit diagnostics and for parity checks with the 20250527 route.
 
-if strcmpi(S.query_guard_mode, 'step04') && ...
+mode = lower(strtrim(string(S.query_guard_mode)));
+
+if any(mode == ["step04", "step04_override", "step04_query_safe", ...
+        "template_override"]) && ...
         isfield(tpl, 'x_query_safe_domain') && ...
         numel(tpl.x_query_safe_domain) == 2 && ...
         all(isfinite(tpl.x_query_safe_domain)) && ...
@@ -2043,7 +2730,7 @@ function qg = compute_query_guard_local(x, v, tpl, S, base_mask)
 % Resolve query guard for the first/core pass.
 %
 % The guard shrinks the template trusted domain because final fitting queries:
-%   x_query = x - dx_c - eta_s - A*sin(EO*theta + phi)
+%   x_query = x - dx_c - A*sin(EO*theta + phi)
 %
 % Adaptive mode estimates apparent displacement by locally inverting the
 % low-speed template voltage and taking a high quantile.
@@ -2089,9 +2776,11 @@ end
 
 
 function x_static = invert_template_voltage_for_guard_local(tpl, v, x_ref)
-% Local inverse of bell-shaped non-parametric template.
-% Because the template is not globally one-to-one, choose the voltage-matching
-% grid point closest to the current x_ref branch.
+% Local inverse of the non-parametric template.
+% Match the verified 20251222 OPRCenterStd route: find voltage crossing
+% points by linear interpolation and choose the branch closest to x_ref.
+% A nearest-grid inverse is too coarse for this guard estimate and can
+% inflate the apparent displacement on non-monotonic pulse shoulders.
 
 xg = tpl.x_grid(:);
 vg = tpl.v_grid(:);
@@ -2113,21 +2802,157 @@ for i = 1:numel(v)
         continue;
     end
 
-    score = abs(vg - v(i));
+    vv = v(i);
+    diff_v = vg - vv;
+    crossing_x = [];
 
-    % Tie-breaker: prefer nearby x branch, avoid jumping across pulse peak.
-    score = score + 1e-6 * abs(xg - x_ref(i));
+    exact_idx = find(abs(diff_v) <= 1e-10);
+    if ~isempty(exact_idx)
+        crossing_x = xg(exact_idx);
+    end
 
-    [~, idx] = min(score);
-    x_static(i) = xg(idx);
+    for k = 1:numel(diff_v)-1
+        if ~isfinite(diff_v(k)) || ~isfinite(diff_v(k+1))
+            continue;
+        end
+        if diff_v(k) == 0 || diff_v(k) * diff_v(k+1) > 0
+            continue;
+        end
+
+        denom = vg(k+1) - vg(k);
+        if abs(denom) < eps
+            continue;
+        end
+
+        alpha = (vv - vg(k)) / denom;
+        crossing_x(end+1, 1) = xg(k) + ...
+            alpha * (xg(k+1) - xg(k)); %#ok<AGROW>
+    end
+
+    if isempty(crossing_x)
+        [~, idx] = min(abs(diff_v));
+        x_static(i) = xg(idx);
+    else
+        [~, idx] = min(abs(crossing_x - x_ref(i)));
+        x_static(i) = crossing_x(idx);
+    end
 end
 
 x_static = reshape(x_static, size(v));
 end
 
 
+function x_static = invert_bundle_template_static_x_local(bundle, S)
+x_static = nan(size(bundle.x(:)));
+if ~isfield(bundle, 'TemplateMini') || isempty(bundle.TemplateMini)
+    return;
+end
+sensors = S.analysis_sensors(:).';
+for sid = sensors
+    idx_sensor = bundle.sensor_id(:) == sid;
+    if ~any(idx_sensor)
+        continue;
+    end
+    blades = unique(bundle.blade_id_vec(idx_sensor).');
+    for bid = blades
+        idx = idx_sensor & bundle.blade_id_vec(:) == bid;
+        if ~any(idx)
+            continue;
+        end
+        tpl = bundle_template_from_point_local(bundle, sid, bid);
+        if isempty(tpl)
+            continue;
+        end
+        mode = lower(strtrim(getfield_default_local( ...
+            S, 'vp_template_inverse_mode', 'branch_monotone')));
+        switch mode
+            case {'branch_monotone', 'monotone_branch'}
+                x_static(idx) = invert_template_branch_monotone_local( ...
+                    tpl, bundle.v(idx), bundle.x(idx));
+            case {'nearest_crossing', 'crossing'}
+                x_static(idx) = invert_template_voltage_for_guard_local( ...
+                    tpl, bundle.v(idx), bundle.x(idx));
+            otherwise
+                error('Unsupported S.vp_template_inverse_mode: %s', mode);
+        end
+    end
+end
+end
+
+
+function x_static = invert_template_branch_monotone_local(tpl, v_obs, x_ref)
+x_static = nan(size(v_obs(:)));
+side = sign(x_ref(:));
+side(side == 0) = 1;
+left = side < 0;
+right = side >= 0;
+x_static(left) = inverse_template_one_side_monotone_local(tpl, v_obs(left), -1);
+x_static(right) = inverse_template_one_side_monotone_local(tpl, v_obs(right), 1);
+end
+
+
+function xq = inverse_template_one_side_monotone_local(tpl, v_obs, side_sign)
+xq = nan(size(v_obs(:)));
+if isempty(v_obs)
+    return;
+end
+xg = tpl.x_grid(:);
+vg = tpl.v_grid(:);
+valid = isfinite(xg) & isfinite(vg);
+if isfield(tpl, 'x_domain') && numel(tpl.x_domain) >= 2 && ...
+        all(isfinite(tpl.x_domain(1:2)))
+    valid = valid & xg >= tpl.x_domain(1) & xg <= tpl.x_domain(2);
+end
+if side_sign < 0
+    valid = valid & xg <= 0;
+    [x_path, order] = sort(xg(valid), 'ascend');
+else
+    valid = valid & xg >= 0;
+    [x_path, order] = sort(xg(valid), 'descend');
+end
+vg_side = vg(valid);
+v_path = vg_side(order);
+good = isfinite(x_path) & isfinite(v_path);
+x_path = x_path(good);
+v_path = v_path(good);
+if numel(x_path) < 3
+    return;
+end
+v_mono = cummax(v_path);
+[v_unique, ia] = unique(v_mono, 'stable');
+x_unique = x_path(ia);
+if numel(v_unique) < 2 || v_unique(end) <= v_unique(1)
+    [~, nearest_idx] = min(abs(v_path(:).' - v_obs(:)), [], 2);
+    xq(:) = x_path(nearest_idx);
+    return;
+end
+v_clip = min(max(v_obs(:), v_unique(1)), v_unique(end));
+xq(:) = interp1(v_unique, x_unique, v_clip, 'linear', 'extrap');
+end
+
+
+function eta = get_fixed_joint_static_eta_local(S)
+eta = zeros(1, numel(S.analysis_sensors));
+if ~isfield(S, 'sensor_eta_prior_mm') || ...
+        numel(S.sensor_eta_prior_mm) ~= numel(S.analysis_sensors)
+    error('Fixed joint static eta prior is missing or has the wrong length.');
+end
+eta = double(S.sensor_eta_prior_mm(:).');
+if any(~isfinite(eta))
+    error('Fixed joint static eta prior contains non-finite values.');
+end
+eta(1) = 0;
+end
+
+
 function eta = estimate_static_sensor_eta_local(bundle, S)
 eta = zeros(1, numel(S.analysis_sensors));
+
+if isfield(S, 'active_eta_model') && ...
+        strcmpi(S.active_eta_model, 'fixed_joint_static_eta')
+    eta = get_fixed_joint_static_eta_local(S);
+    return;
+end
 
 if ~isfield(S, 'static_eta_enable') || ~S.static_eta_enable || isempty(bundle) || ...
         ~isstruct(bundle) || ~isfield(bundle, 'sensor_id')
@@ -2170,6 +2995,14 @@ end
 
 function eta = get_static_sensor_eta_local(bundle, S)
 eta = zeros(1, numel(S.analysis_sensors));
+if isfield(S, 'active_eta_model') && strcmpi(S.active_eta_model, 'none')
+    return;
+end
+if isfield(S, 'active_eta_model') && ...
+        strcmpi(S.active_eta_model, 'fixed_joint_static_eta')
+    eta = get_fixed_joint_static_eta_local(S);
+    return;
+end
 if isstruct(bundle) && isfield(bundle, 'static_sensor_eta') && ...
         numel(bundle.static_sensor_eta) == numel(S.analysis_sensors)
     eta = bundle.static_sensor_eta(:).';
@@ -2233,6 +3066,8 @@ sub = bundle;
 
 fields = { ...
     'x', ...
+    'x_abs', ...
+    'x_center', ...
     'v', ...
     't', ...
     'theta', ...
@@ -2275,11 +3110,122 @@ end
 sub.fit_weight(~isfinite(sub.fit_weight)) = S.weight_floor;
 sub.fit_weight = max(sub.fit_weight, S.weight_floor);
 end
+
+
+function [vp_bundle, info] = build_vp_screening_bundle_local( ...
+    source_bundle, stage_mask, fallback_bundle, S, stage_label)
+info = make_empty_vp_screening_info_local(stage_label);
+mode = lower(strtrim(getfield_default_local(S, ...
+    'vp_bundle_mode', 'legacy_screening_query_safe')));
+
+if isempty(fallback_bundle) || ~isstruct(fallback_bundle) || ...
+        ~isfield(fallback_bundle, 'x') || isempty(fallback_bundle.x)
+    vp_bundle = fallback_bundle;
+    info.fallback_reason = 'empty_fallback_bundle';
+    return;
+end
+
+if isempty(source_bundle) || ~isstruct(source_bundle) || ...
+        ~isfield(source_bundle, 'x') || isempty(source_bundle.x)
+    vp_bundle = fallback_bundle;
+    info.fallback_reason = 'empty_source_bundle';
+    info.selected_point_count = get_bundle_point_count_local(vp_bundle);
+    info.valid_pass_count = get_bundle_valid_pass_count_local(vp_bundle);
+    return;
+end
+
+n = numel(source_bundle.x);
+
+if isempty(stage_mask) || numel(stage_mask) ~= n
+    vp_bundle = fallback_bundle;
+    info.fallback_reason = 'invalid_stage_mask';
+    info.selected_point_count = get_bundle_point_count_local(vp_bundle);
+    info.valid_pass_count = get_bundle_valid_pass_count_local(vp_bundle);
+    return;
+end
+
+mask = stage_mask(:);
+info.stage_mask_point_count = nnz(mask);
+
+switch mode
+    case {'full_fit_bundle', 'fit_bundle'}
+        info.policy = 'fit_bundle';
+        vp_bundle = fallback_bundle;
+        info.selected_point_count = get_bundle_point_count_local(vp_bundle);
+        info.valid_pass_count = get_bundle_valid_pass_count_local(vp_bundle);
+        return;
+
+    case 'legacy_screening_query_safe'
+        info.policy = 'legacy_screening_query_safe';
+        if isfield(source_bundle, 'finite_mask') && ...
+                numel(source_bundle.finite_mask) == n
+            mask = mask & source_bundle.finite_mask(:);
+        end
+        if isfield(source_bundle, 'inside_domain_mask') && ...
+                numel(source_bundle.inside_domain_mask) == n
+            mask = mask & source_bundle.inside_domain_mask(:);
+        else
+            info.missing_inside_domain_mask = true;
+        end
+        if isfield(source_bundle, 'dynamic_effective_mask') && ...
+                numel(source_bundle.dynamic_effective_mask) == n
+            mask = mask & source_bundle.dynamic_effective_mask(:);
+        else
+            info.missing_dynamic_effective_mask = true;
+        end
+        if isfield(source_bundle, 'main_pulse_mask') && ...
+                numel(source_bundle.main_pulse_mask) == n
+            mask = mask & source_bundle.main_pulse_mask(:);
+        else
+            info.missing_main_pulse_mask = true;
+        end
+
+    otherwise
+        error('Unsupported Step05 VP bundle mode: %s.', mode);
+end
+
+candidate = select_bundle_points_local(source_bundle, mask, S);
+info.selected_point_count = candidate.point_count;
+info.screened_point_count = candidate.point_count;
+info.valid_pass_count = candidate.valid_pass_count;
+
+if candidate.point_count >= S.min_fit_points && ...
+        candidate.valid_pass_count >= S.min_valid_pass_count
+    vp_bundle = candidate;
+    info.fallback_reason = '';
+else
+    vp_bundle = fallback_bundle;
+    info.fallback_reason = sprintf( ...
+        'fallback_fit_bundle_after_%s_points_%d_passes_%d', ...
+        info.policy, candidate.point_count, candidate.valid_pass_count);
+    info.selected_point_count = get_bundle_point_count_local(vp_bundle);
+    info.valid_pass_count = get_bundle_valid_pass_count_local(vp_bundle);
+end
+end
+
+
+function info = make_empty_vp_screening_info_local(stage_label)
+info = struct( ...
+    'stage', string(stage_label), ...
+    'policy', 'legacy_screening_query_safe', ...
+    'fallback_reason', '', ...
+    'stage_mask_point_count', NaN, ...
+    'screened_point_count', NaN, ...
+    'selected_point_count', NaN, ...
+    'valid_pass_count', NaN, ...
+    'missing_inside_domain_mask', false, ...
+    'missing_dynamic_effective_mask', false, ...
+    'missing_main_pulse_mask', false);
+end
+
+
 function seed_table = solve_vp_seed_eo_scan_local(bundle, eo_candidates, S)
-% First-order VP seed scan using non-parametric template gradient.
+% VP seed scan.
 %
-% Approximation:
-%   V - T(x) ~= -T'(x) * [dx_c + eta_s + a*sin(EO*theta) + b*cos(EO*theta)]
+% Formal 20251222 route:
+%   x_static = T^{-1}_{s,b}(V) on the observed pulse branch
+%   y_obs    = x - x_static - eta_s
+%   y_obs ~= dx_c + a*sin(EO*theta) + b*cos(EO*theta)
 %
 % The solved sinusoid coefficients are:
 %   y = a*sin(EO*theta) + b*cos(EO*theta)
@@ -2299,6 +3245,8 @@ template = struct( ...
     'phi', NaN, ...
     'dx_c', NaN, ...
     'sensor_eta', zeros(1, n_sensors), ...
+    'vp_linear_rmse', inf, ...
+    'static_residual_rmse_mm', inf, ...
     'weighted_voltage_rmse', inf, ...
     'plain_voltage_rmse', inf, ...
     'point_count', bundle.point_count, ...
@@ -2307,7 +3255,7 @@ template = struct( ...
 seed_table = repmat(template, numel(eo_candidates), 1);
 static_eta = get_static_sensor_eta_local(bundle, S);
 
-x = bundle.x(:); %#ok<NASGU>
+x = bundle.x(:);
 v = bundle.v(:);
 theta = bundle.theta(:);
 T0 = bundle.template_v(:);
@@ -2315,31 +3263,80 @@ Tp = bundle.template_dv_dx(:);
 w = bundle.fit_weight(:);
 sensor_id = bundle.sensor_id(:);
 
-valid = isfinite(v) & ...
-        isfinite(theta) & ...
-        isfinite(T0) & ...
-        isfinite(Tp) & ...
-        isfinite(w) & ...
-        abs(Tp) > eps;
+observation_mode = lower(strtrim(getfield_default_local( ...
+    S, 'vp_seed_observation_mode', 'static_residual_template_inversion')));
+
+switch observation_mode
+    case {'static_residual_template_inversion', 'template_inversion', 'static_residual'}
+        x_static = invert_bundle_template_static_x_local(bundle, S);
+        eta_vec0 = sensor_eta_vector_local(sensor_id, sensors, static_eta);
+        y_obs = x - x_static - eta_vec0(:);
+        valid = isfinite(x) & isfinite(v) & isfinite(theta) & ...
+                isfinite(w) & isfinite(y_obs) & isfinite(eta_vec0(:));
+    case {'gradient_displacement', 'gradient_displacement_vp', ...
+            'q_space', 'qspace', 'displacement_gradient'}
+        eta_vec0 = sensor_eta_vector_local(sensor_id, sensors, static_eta);
+        grad_abs = abs(Tp);
+        grad_ref = prctile(grad_abs(isfinite(grad_abs)), ...
+            getfield_default_local(S, 'vp_gradient_reference_quantile', 95));
+        if ~isfinite(grad_ref) || grad_ref <= 0
+            grad_ref = max(grad_abs(isfinite(grad_abs)), [], 'omitnan');
+        end
+        if ~isfinite(grad_ref) || grad_ref <= 0
+            return;
+        end
+        grad_min = max(0, getfield_default_local(S, ...
+            'vp_gradient_min_ratio', 0.10)) * grad_ref;
+        valid = isfinite(v) & ...
+                isfinite(theta) & ...
+                isfinite(T0) & ...
+                isfinite(Tp) & ...
+                isfinite(w) & ...
+                isfinite(eta_vec0(:)) & ...
+                grad_abs >= max(grad_min, eps);
+        y_obs = nan(size(v));
+        y_obs(valid) = -(v(valid) - T0(valid)) ./ Tp(valid) - eta_vec0(valid);
+    case {'linear_voltage_residual', 'voltage_gradient'}
+        valid = isfinite(v) & ...
+                isfinite(theta) & ...
+                isfinite(T0) & ...
+                isfinite(Tp) & ...
+                isfinite(w) & ...
+                abs(Tp) > eps;
+        y_obs = v - T0;
+    otherwise
+        error('Unsupported S.vp_seed_observation_mode: %s', observation_mode);
+end
 
 if nnz(valid) < S.min_fit_points
     return;
 end
 
+x = x(valid); %#ok<NASGU>
 v = v(valid);
 theta = theta(valid);
 T0 = T0(valid);
 Tp = Tp(valid);
 w = w(valid);
 sensor_id = sensor_id(valid);
+y_obs = y_obs(valid);
 
-% Linearized voltage residual, matching the verified 20251222 route.
-% Do not divide by T'(x): q-space fitting amplifies low-gradient noise and
-% changes EO ranking for this dataset.
-y_obs = v - T0;
 wq = w;
 wq(~isfinite(wq)) = S.weight_floor;
 wq = max(wq, S.weight_floor);
+if any(strcmp(observation_mode, {'gradient_displacement', ...
+        'gradient_displacement_vp', 'q_space', 'qspace', ...
+        'displacement_gradient'}))
+    grad_abs = abs(Tp);
+    grad_ref = prctile(grad_abs(isfinite(grad_abs)), ...
+        getfield_default_local(S, 'vp_gradient_reference_quantile', 95));
+    if isfinite(grad_ref) && grad_ref > 0
+        grad_power = getfield_default_local(S, 'vp_gradient_weight_power', 2);
+        grad_weight = min(grad_abs ./ max(grad_ref, eps), 1) .^ ...
+            max(0, grad_power);
+        wq = max(S.weight_floor, wq .* grad_weight);
+    end
+end
 
 for iEO = 1:numel(eo_candidates)
     EO = eo_candidates(iEO);
@@ -2351,14 +3348,27 @@ for iEO = 1:numel(eo_candidates)
     %   common dx_c
     %   sin coefficient a
     %   cos coefficient b
-    % The verified 20251222 OPRCenterStd route does not include eta_s in
-    % the linear VP EO screen. Eta is still optimized in the later full
-    % waveform refinement.
-    X = [-Tp, -Tp .* s, -Tp .* c];
+    switch observation_mode
+        case {'static_residual_template_inversion', 'template_inversion', ...
+                'static_residual', 'gradient_displacement', ...
+                'gradient_displacement_vp', 'q_space', 'qspace', ...
+                'displacement_gradient'}
+            X = [ones(size(s)), s, c];
+        otherwise
+            X = [-Tp, -Tp .* s, -Tp .* c];
+    end
 
     if isfield(S, 'vp_include_sensor_eta') && S.vp_include_sensor_eta
         for is = 2:n_sensors
-            X = [X, -Tp .* double(sensor_id == sensors(is))]; %#ok<AGROW>
+            switch observation_mode
+                case {'static_residual_template_inversion', 'template_inversion', ...
+                        'static_residual', 'gradient_displacement', ...
+                        'gradient_displacement_vp', 'q_space', 'qspace', ...
+                        'displacement_gradient'}
+                    X = [X, double(sensor_id == sensors(is))]; %#ok<AGROW>
+                otherwise
+                    X = [X, -Tp .* double(sensor_id == sensors(is))]; %#ok<AGROW>
+            end
         end
     end
 
@@ -2388,6 +3398,9 @@ for iEO = 1:numel(eo_candidates)
     dx_c = beta(1);
     a = beta(2);
     b = beta(3);
+    linear_resid = yg - Xg * beta;
+    linear_rmse = sqrt(sum(wq(good) .* (linear_resid .^ 2)) ./ ...
+        max(sum(wq(good)), eps));
 
     eta = static_eta;
     if isfield(S, 'vp_include_sensor_eta') && S.vp_include_sensor_eta && ...
@@ -2406,6 +3419,11 @@ for iEO = 1:numel(eo_candidates)
         dx_c = 0;
     end
     eta(~isfinite(eta)) = 0;
+    if isfinite(S.amplitude_limit_mm)
+        A = min(max(abs(A), 0), abs(S.amplitude_limit_mm));
+    end
+    dx_c = clamp_scalar_local(dx_c, S.dx_c_limit_mm);
+    eta = clamp_vector_local(eta, S.sensor_eta_limit_mm);
 
     [wrmse, prmse] = evaluate_full_template_model_local( ...
         bundle, EO, A, phi, dx_c, eta, S);
@@ -2415,10 +3433,22 @@ for iEO = 1:numel(eo_candidates)
     seed_table(iEO).phi = wrap_to_pi_local(phi);
     seed_table(iEO).dx_c = dx_c;
     seed_table(iEO).sensor_eta = eta;
+    seed_table(iEO).vp_linear_rmse = linear_rmse;
+    seed_table(iEO).static_residual_rmse_mm = linear_rmse;
     seed_table(iEO).weighted_voltage_rmse = wrmse;
     seed_table(iEO).plain_voltage_rmse = prmse;
     seed_table(iEO).point_count = bundle.point_count;
-    seed_table(iEO).rank_score = wrmse;
+    switch lower(strtrim(getfield_default_local( ...
+            S, 'vp_rank_score_mode', 'linear_residual')))
+        case {'linear', 'linear_residual', 'vp_linear', ...
+                'static_residual_mm', 'static_residual', 'template_inversion'}
+            seed_table(iEO).rank_score = linear_rmse;
+        case {'full_seed', 'full_model_seed', 'weighted_voltage_rmse'}
+            seed_table(iEO).rank_score = wrmse;
+        otherwise
+            error('Unsupported S.vp_rank_score_mode: %s', ...
+                getfield_default_local(S, 'vp_rank_score_mode', ''));
+    end
 end
 end
 
@@ -2445,6 +3475,84 @@ end
 
 final_eos = eos_valid(order);
 final_eos = unique(final_eos, 'stable');
+end
+
+
+function [eo_selected, info] = select_eo_candidates_adaptive_local(seed_table, S)
+info = struct();
+info.policy = 'adaptive_full_fit';
+info.top_k_min = S.vp_top_k_min;
+info.top_k_max = S.vp_top_k_max;
+info.top_rank_keep = getfield_default_local(S, 'vp_top_rank_keep', S.vp_top_k_min);
+info.gap_ratio_keep = S.vp_gap_ratio_keep;
+info.include_neighbor_eo = S.include_neighbor_eo;
+info.neighbor_eo_radius = S.neighbor_eo_radius;
+info.SelectionTable = table();
+info.selected_EO = [];
+
+eo_selected = [];
+
+if isempty(seed_table)
+    return;
+end
+
+T = struct2table(seed_table);
+if ~all(ismember({'EO', 'rank_score'}, T.Properties.VariableNames))
+    return;
+end
+
+valid = isfinite(T.EO) & isfinite(T.rank_score);
+T = T(valid, :);
+
+if isempty(T)
+    return;
+end
+
+T = sortrows(T, {'rank_score', 'EO'}, {'ascend', 'ascend'});
+
+top_min = max(1, floor(S.vp_top_k_min));
+top_max = max(top_min, floor(S.vp_top_k_max));
+top_rank_keep = max(top_min, floor(getfield_default_local(S, ...
+    'vp_top_rank_keep', top_min)));
+top_max = max(top_max, top_rank_keep);
+gap_thr = max(S.vp_gap_ratio_keep, 0);
+
+best_score = T.rank_score(1);
+gap_ratio = (T.rank_score - best_score) ./ max(abs(best_score), eps);
+keep = false(height(T), 1);
+
+keep(1:min(top_min, height(T))) = true;
+keep(1:min(top_rank_keep, height(T))) = true;
+keep = keep | gap_ratio <= gap_thr;
+
+eo = T.EO(keep).';
+
+if isfield(S, 'include_neighbor_eo') && S.include_neighbor_eo
+    radius = max(0, floor(S.neighbor_eo_radius));
+    eo_expand = [];
+    for i = 1:numel(eo)
+        eo_expand = [eo_expand, (eo(i) - radius):(eo(i) + radius)]; %#ok<AGROW>
+    end
+    eo = unique(eo_expand);
+end
+
+eo_all = T.EO(:).';
+eo = eo(ismember(eo, eo_all));
+
+[~, loc] = ismember(eo, T.EO);
+loc = sort(loc(loc > 0));
+loc = loc(1:min(numel(loc), top_max));
+
+eo_selected = T.EO(loc).';
+
+T.vp_rank = (1:height(T)).';
+T.vp_gap_ratio = gap_ratio;
+T.selected_for_full_fit = ismember(T.EO, eo_selected);
+
+info.SelectionTable = T(:, {'EO', 'rank_score', ...
+    'weighted_voltage_rmse', 'vp_rank', 'vp_gap_ratio', ...
+    'selected_for_full_fit'});
+info.selected_EO = eo_selected;
 end
 
 
@@ -2513,6 +3621,12 @@ candidate_template = struct( ...
     'dx_c', NaN, ...
     'sensor_eta', [], ...
     'objective_score', inf, ...
+    'decision_score', inf, ...
+    'decision_score_mode', string(getfield_default_local( ...
+        S, 'eo_decision_score_mode', 'weighted_voltage_rmse')), ...
+    'static_residual_rmse_mm', inf, ...
+    'seed_weighted_voltage_rmse', inf, ...
+    'seed_plain_voltage_rmse', inf, ...
     'weighted_voltage_rmse', inf, ...
     'plain_voltage_rmse', inf, ...
     'point_count', bundle.point_count, ...
@@ -2526,6 +3640,12 @@ for i = 1:numel(final_eos)
     EO = final_eos(i);
 
     seed = get_seed_for_eo_local(seed_table, EO, S);
+    seed_static_residual_rmse_mm = getfield_default_local( ...
+        seed, 'static_residual_rmse_mm', inf);
+    seed_weighted_voltage_rmse = getfield_default_local( ...
+        seed, 'weighted_voltage_rmse', inf);
+    seed_plain_voltage_rmse = getfield_default_local( ...
+        seed, 'plain_voltage_rmse', inf);
 
     obj = @(p) direct_template_objective_local(p, EO, bundle, S);
     starts = build_direct_fit_start_points_local(seed, bundle, S);
@@ -2582,15 +3702,22 @@ for i = 1:numel(final_eos)
     Candidate(i).dx_c = dx_c;
     Candidate(i).sensor_eta = eta;
     Candidate(i).objective_score = objective_score;
+    Candidate(i).decision_score_mode = string(getfield_default_local( ...
+        S, 'eo_decision_score_mode', 'weighted_voltage_rmse'));
+    Candidate(i).static_residual_rmse_mm = seed_static_residual_rmse_mm;
+    Candidate(i).seed_weighted_voltage_rmse = seed_weighted_voltage_rmse;
+    Candidate(i).seed_plain_voltage_rmse = seed_plain_voltage_rmse;
     Candidate(i).weighted_voltage_rmse = wrmse;
     Candidate(i).plain_voltage_rmse = prmse;
     Candidate(i).point_count = bundle.point_count;
     Candidate(i).exitflag = exitflag;
     Candidate(i).start_count = size(starts, 1);
     Candidate(i).best_start_index = best_start_index;
+    Candidate(i).decision_score = compute_candidate_decision_score_local( ...
+        Candidate(i), S);
 end
 
-[~, best_idx] = min([Candidate.objective_score]);
+best_idx = select_best_candidate_index_local(Candidate, S);
 
 best = Candidate(best_idx);
 
@@ -2625,6 +3752,11 @@ result.fn_id = best.EO * bundle.rot_freq_mean_hz;
 result.rot_freq_mean_hz = bundle.rot_freq_mean_hz;
 result.rot_rpm_mean = bundle.rot_rpm_mean;
 result.objective_score = objective_score;
+result.decision_score = best.decision_score;
+result.decision_score_mode = best.decision_score_mode;
+result.static_residual_rmse_mm = best.static_residual_rmse_mm;
+result.seed_weighted_voltage_rmse = best.seed_weighted_voltage_rmse;
+result.seed_plain_voltage_rmse = best.seed_plain_voltage_rmse;
 result.weighted_voltage_rmse = wrmse;
 result.plain_voltage_rmse = prmse;
 result.point_count = bundle.point_count;
@@ -2655,11 +3787,83 @@ if isempty(Candidate)
     return;
 end
 T = struct2table(Candidate);
-if any(strcmp(T.Properties.VariableNames, 'objective_score'))
+decision_mode = "";
+if any(strcmp(T.Properties.VariableNames, 'decision_score_mode'))
+    mode_values = string(T.decision_score_mode);
+    mode_values = mode_values(strlength(mode_values) > 0);
+    if ~isempty(mode_values)
+        decision_mode = lower(strtrim(mode_values(1)));
+    end
+end
+
+if any(strcmp(T.Properties.VariableNames, 'decision_score')) && ...
+        ~any(decision_mode == ["weighted_voltage_rmse", ...
+        "voltage_rmse", "full_fit_rmse"])
+    T = sortrows(T, {'decision_score', 'weighted_voltage_rmse', 'EO'}, ...
+        {'ascend', 'ascend', 'ascend'});
+elseif any(strcmp(T.Properties.VariableNames, 'static_residual_rmse_mm'))
+    T = sortrows(T, {'weighted_voltage_rmse', 'static_residual_rmse_mm', 'EO'}, ...
+        {'ascend', 'ascend', 'ascend'});
+elseif any(strcmp(T.Properties.VariableNames, 'objective_score'))
     T = sortrows(T, {'objective_score', 'weighted_voltage_rmse', 'EO'}, ...
         {'ascend', 'ascend', 'ascend'});
 elseif any(strcmp(T.Properties.VariableNames, 'weighted_voltage_rmse'))
     T = sortrows(T, {'weighted_voltage_rmse', 'EO'}, {'ascend', 'ascend'});
+end
+end
+
+
+function best_idx = select_best_candidate_index_local(Candidate, S)
+scores = arrayfun(@(c) compute_candidate_decision_score_local(c, S), Candidate);
+rmse = [Candidate.weighted_voltage_rmse];
+eos = [Candidate.EO];
+scores = scores(:).';
+rmse = rmse(:).';
+eos = eos(:).';
+
+valid = isfinite(scores) & isfinite(rmse) & isfinite(eos);
+if ~any(valid)
+    scores = [Candidate.objective_score];
+    valid = isfinite(scores) & isfinite(rmse) & isfinite(eos);
+end
+
+if ~any(valid)
+    best_idx = 1;
+    return;
+end
+
+idx = find(valid);
+idx = idx(:);
+score_col = scores(idx);
+rmse_col = rmse(idx);
+eo_col = eos(idx);
+sort_matrix = [score_col(:), rmse_col(:), eo_col(:)];
+[~, order] = sortrows(sort_matrix, [1 2 3]);
+best_idx = idx(order(1));
+end
+
+
+function score = compute_candidate_decision_score_local(candidate, S)
+mode = lower(strtrim(char(string(getfield_default_local( ...
+    S, 'eo_decision_score_mode', 'weighted_voltage_rmse')))));
+
+switch mode
+    case {'static_residual_mm', 'static_residual', ...
+            'template_inversion', 'vp_rank_score'}
+        score = getfield_default_local(candidate, ...
+            'static_residual_rmse_mm', inf);
+    case {'weighted_voltage_rmse', 'voltage_rmse', 'full_fit_rmse'}
+        score = getfield_default_local(candidate, ...
+            'weighted_voltage_rmse', inf);
+    case {'objective', 'objective_score'}
+        score = getfield_default_local(candidate, ...
+            'objective_score', inf);
+    otherwise
+        error('Unsupported S.eo_decision_score_mode: %s', mode);
+end
+
+if ~isfinite(score)
+    score = inf;
 end
 end
 
@@ -2670,44 +3874,80 @@ ambiguity = struct( ...
     'finite_candidate_count', 0, ...
     'best_eo', NaN, ...
     'best_rmse_v', NaN, ...
+    'best_decision_score', NaN, ...
+    'best_static_residual_rmse_mm', NaN, ...
     'second_best_eo', NaN, ...
     'second_best_rmse_v', NaN, ...
+    'second_best_decision_score', NaN, ...
+    'second_best_static_residual_rmse_mm', NaN, ...
     'rmse_gap_v', NaN, ...
     'rmse_gap_ratio', NaN, ...
+    'decision_score_gap', NaN, ...
+    'decision_score_gap_ratio', NaN, ...
     'top_eo_list', "", ...
-    'top_rmse_list', "");
+    'top_rmse_list', "", ...
+    'top_decision_score_list', "");
 
 if isempty(Candidate)
     return;
 end
 
-rmse = [Candidate.weighted_voltage_rmse];
 eo = [Candidate.EO];
-valid = isfinite(rmse) & isfinite(eo);
+rmse = [Candidate.weighted_voltage_rmse];
+eo = eo(:).';
+rmse = rmse(:).';
+if isfield(Candidate, 'decision_score')
+    decision_score = [Candidate.decision_score];
+else
+    decision_score = rmse;
+end
+if isfield(Candidate, 'static_residual_rmse_mm')
+    static_residual = [Candidate.static_residual_rmse_mm];
+else
+    static_residual = nan(size(rmse));
+end
+decision_score = decision_score(:).';
+static_residual = static_residual(:).';
+
+valid = isfinite(decision_score) & isfinite(rmse) & isfinite(eo);
 ambiguity.finite_candidate_count = nnz(valid);
 
 if ~any(valid)
     return;
 end
 
-rmse_valid = rmse(valid);
 eo_valid = eo(valid);
-[rmse_sorted, order] = sort(rmse_valid, 'ascend');
+rmse_valid = rmse(valid);
+decision_valid = decision_score(valid);
+static_valid = static_residual(valid);
+[~, order] = sortrows([decision_valid(:), rmse_valid(:), eo_valid(:)], [1 2 3]);
 eo_sorted = eo_valid(order);
+rmse_sorted = rmse_valid(order);
+decision_sorted = decision_valid(order);
+static_sorted = static_valid(order);
 
 ambiguity.best_eo = eo_sorted(1);
 ambiguity.best_rmse_v = rmse_sorted(1);
+ambiguity.best_decision_score = decision_sorted(1);
+ambiguity.best_static_residual_rmse_mm = static_sorted(1);
 
 if numel(eo_sorted) >= 2
     ambiguity.second_best_eo = eo_sorted(2);
     ambiguity.second_best_rmse_v = rmse_sorted(2);
+    ambiguity.second_best_decision_score = decision_sorted(2);
+    ambiguity.second_best_static_residual_rmse_mm = static_sorted(2);
     ambiguity.rmse_gap_v = rmse_sorted(2) - rmse_sorted(1);
     ambiguity.rmse_gap_ratio = ambiguity.rmse_gap_v / max(rmse_sorted(1), eps);
+    ambiguity.decision_score_gap = decision_sorted(2) - decision_sorted(1);
+    ambiguity.decision_score_gap_ratio = ambiguity.decision_score_gap / ...
+        max(abs(decision_sorted(1)), eps);
 end
 
 n_top = min(5, numel(eo_sorted));
 ambiguity.top_eo_list = strjoin(compose('%d', eo_sorted(1:n_top)), '|');
 ambiguity.top_rmse_list = strjoin(compose('%.6g', rmse_sorted(1:n_top)), '|');
+ambiguity.top_decision_score_list = strjoin( ...
+    compose('%.6g', decision_sorted(1:n_top)), '|');
 end
 
 
@@ -2782,8 +4022,8 @@ if isfield(S, 'fit_sensor_eta') && S.fit_sensor_eta && numel(p) > 3
     eta(2:end) = p(4:end);
 end
 
-% No hard parameter bounds in the official route.  A is represented as a
-% nonnegative amplitude; dx_c and eta remain unconstrained model variables.
+% Raw unpacking only normalizes amplitude sign and phase.  The official
+% bounded route applies physical clamps in unpack_params_for_bundle_local.
 A = abs(A);
 phi = wrap_to_pi_local(phi);
 
@@ -2794,8 +4034,32 @@ end
 
 function [A, phi, dx_c, eta] = unpack_params_for_bundle_local(p, S, bundle)
 [A, phi, dx_c, eta] = unpack_params_local(p, S);
-if ~isfield(S, 'fit_sensor_eta') || ~S.fit_sensor_eta
+if isfield(S, 'active_eta_model') && strcmpi(S.active_eta_model, 'none')
+    eta = zeros(1, numel(S.analysis_sensors));
+elseif ~isfield(S, 'fit_sensor_eta') || ~S.fit_sensor_eta
     eta = get_static_sensor_eta_local(bundle, S);
+end
+
+enforce_bounds = ...
+    (isfield(S, 'enforce_parameter_bounds') && S.enforce_parameter_bounds) || ...
+    (isfield(S, 'enforce_legacy_parameter_bounds') && ...
+     S.enforce_legacy_parameter_bounds);
+
+if enforce_bounds
+    if isfinite(S.amplitude_limit_mm)
+        A = min(abs(A), abs(S.amplitude_limit_mm));
+    end
+    dx_c = clamp_scalar_local(dx_c, S.dx_c_limit_mm);
+    fixed_eta_model = isfield(S, 'active_eta_model') && ...
+        strcmpi(S.active_eta_model, 'fixed_joint_static_eta') && ...
+        (~isfield(S, 'fit_sensor_eta') || ~S.fit_sensor_eta);
+    if ~fixed_eta_model
+        eta = clamp_vector_local(eta, ...
+            resolve_sensor_eta_limit_step05_local(bundle, S));
+    end
+    if ~isempty(eta)
+        eta(1) = 0;
+    end
 end
 end
 
@@ -2822,6 +4086,7 @@ extrapolation_mode = 'nan_outside';
 if isfield(S, 'extrapolation_mode') && ~isempty(S.extrapolation_mode)
     extrapolation_mode = lower(strtrim(S.extrapolation_mode));
 end
+interp_method = getfield_default_local(S, 'template_interp_method', 'pchip');
 
 y = A .* sin(EO .* bundle.theta(:) + phi);
 
@@ -2869,7 +4134,7 @@ for sid = sensors
             tpl.x_grid(:), ...
             tpl.v_grid(:), ...
             xq_eval, ...
-            'linear', ...
+            interp_method, ...
             NaN);
     end
 end
@@ -3007,11 +4272,259 @@ end
 end
 
 
+function eta_limit = resolve_sensor_eta_limit_step05_local(bundle, S)
+eta_limit = abs(S.sensor_eta_limit_mm) * ones(1, numel(S.analysis_sensors));
+
+if ~isfield(S, 'use_template_eta_limit') || ~S.use_template_eta_limit || ...
+        ~isfield(bundle, 'TemplateMini') || isempty(bundle.TemplateMini)
+    return;
+end
+
+for i = 1:min(numel(bundle.TemplateMini), numel(eta_limit))
+    if isfield(bundle.TemplateMini(i), 'eta_limit_mm') && ...
+            isfinite(bundle.TemplateMini(i).eta_limit_mm) && ...
+            bundle.TemplateMini(i).eta_limit_mm > 0
+        eta_limit(i) = min(eta_limit(i), abs(bundle.TemplateMini(i).eta_limit_mm));
+    end
+end
+end
+
+
+function [phase_ref, info] = resolve_phase_safe_reference_local( ...
+    prev_result, core_result, seed_table, window_id, S)
+mode = lower(strtrim(getfield_default_local(S, ...
+    'phase_safe_reference_mode', 'prev_window')));
+
+if strcmpi(mode, 'prev_window')
+    [ok_prev, reason_prev] = is_prev_phase_reference_usable_local( ...
+        prev_result, window_id, S);
+
+    if ok_prev
+        phase_ref = phase_reference_from_result_local(prev_result, S, ...
+            'prev_window_final');
+        info = struct('source', 'prev_window_final', ...
+            'reason', 'prev_window_quality_pass', ...
+            'window_id', prev_result.window_id);
+        return;
+    end
+
+    fallback_mode = lower(strtrim(getfield_default_local(S, ...
+        'phase_safe_fallback_mode', 'linear_vp')));
+    [phase_ref, fallback_source] = phase_reference_from_fallback_local( ...
+        fallback_mode, core_result, seed_table, S);
+    info = struct('source', fallback_source, ...
+        'reason', sprintf('%s_then_%s', reason_prev, fallback_mode), ...
+        'window_id', window_id);
+    return;
+end
+
+if strcmpi(mode, 'linear_vp')
+    phase_ref = phase_reference_from_seed_local(seed_table, S);
+    info = struct('source', 'linear_vp_seed', ...
+        'reason', 'configured_linear_vp', ...
+        'window_id', window_id);
+else
+    phase_ref = phase_reference_from_result_local(core_result, S, ...
+        'current_core_final');
+    info = struct('source', 'current_core_final', ...
+        'reason', 'configured_core_current', ...
+        'window_id', window_id);
+end
+end
+
+
+function [phase_ref, source] = phase_reference_from_fallback_local( ...
+    fallback_mode, core_result, seed_table, S)
+switch lower(strtrim(fallback_mode))
+    case 'linear_vp'
+        phase_ref = phase_reference_from_seed_local(seed_table, S);
+        source = 'linear_vp_seed';
+    case 'final_core'
+        phase_ref = phase_reference_from_result_local(core_result, S, ...
+            'current_core_final');
+        source = 'current_core_final';
+    otherwise
+        phase_ref = phase_reference_from_result_local(core_result, S, ...
+            'current_core_final');
+        source = 'current_core_final';
+end
+end
+
+
+function phase_ref = phase_reference_from_seed_local(seed_table, S)
+if isempty(seed_table)
+    phase_ref = phase_reference_from_result_local(make_failed_result_local( ...
+        'empty_seed_table'), S, 'linear_vp_seed_empty');
+    return;
+end
+
+seed = seed_table(1);
+phase_ref = struct();
+phase_ref.window_id = NaN;
+phase_ref.EO_id = seed.EO;
+phase_ref.A_id = min(abs(seed.A), abs(S.amplitude_limit_mm));
+phase_ref.phi_id_wrapped = wrap_to_pi_local(seed.phi);
+phase_ref.dx_c_id = clamp_scalar_local(seed.dx_c, S.dx_c_limit_mm);
+phase_ref.sensor_eta_id = zeros(1, numel(S.analysis_sensors));
+
+if isfield(S, 'active_eta_model') && ...
+        strcmpi(S.active_eta_model, 'fixed_joint_static_eta') && ...
+        isfield(S, 'sensor_eta_prior_mm') && ...
+        numel(S.sensor_eta_prior_mm) == numel(S.analysis_sensors)
+    phase_ref.sensor_eta_id = double(S.sensor_eta_prior_mm(:).');
+elseif isfield(seed, 'sensor_eta') && ~isempty(seed.sensor_eta)
+    n = min(numel(phase_ref.sensor_eta_id), numel(seed.sensor_eta));
+    phase_ref.sensor_eta_id(1:n) = seed.sensor_eta(1:n);
+    phase_ref.sensor_eta_id = clamp_vector_local( ...
+        phase_ref.sensor_eta_id, S.sensor_eta_limit_mm);
+end
+phase_ref.sensor_eta_id(1) = 0;
+phase_ref.weighted_voltage_rmse = seed.weighted_voltage_rmse;
+phase_ref.reference_source = 'linear_vp_seed';
+end
+
+
+function phase_ref = phase_reference_from_result_local(result, S, source)
+phase_ref = struct();
+phase_ref.window_id = getfield_default_local(result, 'window_id', NaN);
+phase_ref.EO_id = getfield_default_local(result, 'EO_id', NaN);
+phase_ref.A_id = min(abs(getfield_default_local(result, 'A_id', NaN)), ...
+    abs(S.amplitude_limit_mm));
+phase_ref.phi_id_wrapped = wrap_to_pi_local( ...
+    getfield_default_local(result, 'phi_id_wrapped', NaN));
+phase_ref.dx_c_id = clamp_scalar_local( ...
+    getfield_default_local(result, 'dx_c_id', NaN), S.dx_c_limit_mm);
+phase_ref.sensor_eta_id = zeros(1, numel(S.analysis_sensors));
+
+eta = getfield_default_local(result, 'sensor_eta_id', []);
+if isfield(S, 'active_eta_model') && ...
+        strcmpi(S.active_eta_model, 'fixed_joint_static_eta') && ...
+        isfield(S, 'sensor_eta_prior_mm') && ...
+        numel(S.sensor_eta_prior_mm) == numel(S.analysis_sensors)
+    phase_ref.sensor_eta_id = double(S.sensor_eta_prior_mm(:).');
+elseif ~isempty(eta)
+    n = min(numel(phase_ref.sensor_eta_id), numel(eta));
+    phase_ref.sensor_eta_id(1:n) = eta(1:n);
+    phase_ref.sensor_eta_id = clamp_vector_local( ...
+        phase_ref.sensor_eta_id, S.sensor_eta_limit_mm);
+end
+phase_ref.sensor_eta_id(1) = 0;
+phase_ref.weighted_voltage_rmse = getfield_default_local( ...
+    result, 'weighted_voltage_rmse', NaN);
+phase_ref.reference_source = source;
+end
+
+
+function [ok, reason] = is_prev_phase_reference_usable_local( ...
+    prev_result, window_id, S)
+ok = false;
+
+if isempty(prev_result) || ~isstruct(prev_result)
+    reason = 'no_previous_window';
+    return;
+end
+
+refresh_every = getfield_default_local(S, 'phase_safe_refresh_every', 0);
+if refresh_every > 0 && mod(window_id - 1, refresh_every) == 0
+    reason = 'scheduled_refresh';
+    return;
+end
+
+required = {'window_id', 'EO_id', 'A_id', 'phi_id_wrapped', ...
+    'dx_c_id', 'weighted_voltage_rmse', 'Coverage'};
+for i = 1:numel(required)
+    if ~isfield(prev_result, required{i})
+        reason = ['previous_missing_', required{i}];
+        return;
+    end
+end
+
+vals = [prev_result.window_id, prev_result.EO_id, prev_result.A_id, ...
+    prev_result.phi_id_wrapped, prev_result.dx_c_id, ...
+    prev_result.weighted_voltage_rmse];
+if any(~isfinite(vals))
+    reason = 'previous_nonfinite_reference';
+    return;
+end
+
+max_clamp = getfield_default_local(S, ...
+    'phase_safe_prev_max_clamp_fraction', inf);
+if isfield(prev_result.Coverage, 'clamp_fraction') && ...
+        prev_result.Coverage.clamp_fraction > max_clamp
+    reason = 'previous_clamped';
+    return;
+end
+
+min_gap = getfield_default_local(S, ...
+    'phase_safe_prev_min_final_gap_ratio', -inf);
+gap_ratio = final_candidate_gap_ratio_step05_local(prev_result);
+if isfinite(min_gap) && gap_ratio < min_gap
+    reason = 'previous_final_gap_too_small';
+    return;
+end
+
+ok = true;
+reason = 'prev_window_quality_pass';
+end
+
+
+function gap_ratio = final_candidate_gap_ratio_step05_local(result)
+gap_ratio = inf;
+if ~isfield(result, 'CandidateTable') || isempty(result.CandidateTable) || ...
+        height(result.CandidateTable) < 2 || ...
+        ~ismember('weighted_voltage_rmse', result.CandidateTable.Properties.VariableNames)
+    return;
+end
+
+rmse = result.CandidateTable.weighted_voltage_rmse;
+rmse = sort(rmse(isfinite(rmse)), 'ascend');
+if numel(rmse) < 2
+    return;
+end
+
+gap_ratio = (rmse(2) - rmse(1)) / max(rmse(1), eps);
+end
+
+
+function y = clamp_scalar_local(x, limit_abs)
+if ~isfinite(x)
+    y = x;
+    return;
+end
+
+if ~isfinite(limit_abs)
+    y = x;
+else
+    limit_abs = abs(limit_abs);
+    y = min(max(x, -limit_abs), limit_abs);
+end
+end
+
+
+function y = clamp_vector_local(x, limit_abs)
+y = x;
+if isempty(limit_abs) || all(~isfinite(limit_abs))
+    return;
+end
+
+limit_abs = abs(limit_abs(:).');
+if numel(limit_abs) == 1
+    limit_abs = repmat(limit_abs, size(y));
+elseif numel(limit_abs) < numel(y)
+    limit_abs(numel(limit_abs)+1:numel(y)) = limit_abs(end);
+else
+    limit_abs = limit_abs(1:numel(y));
+end
+limit_abs(~isfinite(limit_abs)) = inf;
+y = min(max(y, -limit_abs), limit_abs);
+end
+
+
 function expanded_mask = build_phase_safe_expansion_mask_local(bundle, result, S)
 % Second-stage deterministic phase-safe expansion.
 %
 % Use fitted vibration/offset parameters to compute:
-%   x_query = x - dx_c - eta_s - A*sin(EO*theta + phi)
+%   x_query = x - dx_c - A*sin(EO*theta + phi)
 %
 % A candidate point is expanded into the fitting set only if x_query stays
 % inside the Step04 trusted template domain.
@@ -3059,6 +4572,10 @@ for sid = sensors
 end
 
 expanded_mask = expanded_mask & bundle.finite_mask(:);
+if isfield(bundle, 'main_pulse_mask') && ...
+        numel(bundle.main_pulse_mask) == numel(expanded_mask)
+    expanded_mask = expanded_mask & bundle.main_pulse_mask(:);
+end
 end
 
 
@@ -3080,8 +4597,11 @@ if S.choose_better_pass && ...
         isfield(expanded_result, 'status') && ...
         strcmpi(expanded_result.status, 'ok')
 
-    improve = core_result.weighted_voltage_rmse - ...
-              expanded_result.weighted_voltage_rmse;
+    core_score = getfield_default_local(core_result, ...
+        'decision_score', core_result.weighted_voltage_rmse);
+    expanded_score = getfield_default_local(expanded_result, ...
+        'decision_score', expanded_result.weighted_voltage_rmse);
+    improve = core_score - expanded_score;
 
     if isfinite(improve) && improve >= S.better_pass_rmse_tolerance_v
         chosen_bundle = expanded_bundle;
@@ -3104,7 +4624,8 @@ mini = repmat( ...
     'v_grid', [], ...
     'dv_dx', [], ...
     'xc', NaN, ...
-    'x_domain', [NaN NaN]), ...
+    'x_domain', [NaN NaN], ...
+    'eta_limit_mm', NaN), ...
     numel(sensors), 1);
 
 for i = 1:numel(sensors)
@@ -3117,6 +4638,9 @@ for i = 1:numel(sensors)
     mini(i).dv_dx = tpl.dv_dx(:);
     mini(i).xc = get_template_xcenter_local(tpl);
     mini(i).x_domain = tpl.x_domain;
+    if isfield(tpl, 'eta_limit_mm') && isfinite(tpl.eta_limit_mm)
+        mini(i).eta_limit_mm = tpl.eta_limit_mm;
+    end
 end
 
 bundle.TemplateMini = mini;
@@ -3126,17 +4650,64 @@ end
 function tpl = get_template_entry_local(Template, sid, blade_id)
 tpl = [];
 
-if ~isfield(Template, 'SensorBlade')
-    return;
+if isfield(Template, 'SensorBlade')
+    for i = 1:numel(Template.SensorBlade)
+        if Template.SensorBlade(i).sensor_id == sid && ...
+                Template.SensorBlade(i).blade_id == blade_id
+
+            tpl = Template.SensorBlade(i);
+            return;
+        end
+    end
 end
 
-for i = 1:numel(Template.SensorBlade)
-    if Template.SensorBlade(i).sensor_id == sid && ...
-            Template.SensorBlade(i).blade_id == blade_id
-
-        tpl = Template.SensorBlade(i);
-        return;
+% Compatibility path for the verified 20251222 legacy assembled template
+% used only in override diagnostics. That template stores one target blade
+% as Template.Sensor instead of the foundation SensorBlade array.
+if isfield(Template, 'Sensor') && ...
+        (~isfield(Template, 'TargetBlade') || Template.TargetBlade == blade_id)
+    for i = 1:numel(Template.Sensor)
+        if Template.Sensor(i).sensor_id == sid
+            tpl = Template.Sensor(i);
+            return;
+        end
     end
+end
+end
+
+
+function theta_std_deg = get_standard_angle_local(Template, sid, blade_id)
+angles = Template.Standard_Relative_Angles;
+
+if ndims(angles) ~= 2 || size(angles, 2) < blade_id
+    error('Step05:TemplateContract', ...
+        'Template.Standard_Relative_Angles does not cover Blade%d.', ...
+        blade_id);
+end
+
+row = [];
+if isfield(Template, 'Sensor_IDs') && ~isempty(Template.Sensor_IDs)
+    sensor_ids = double(Template.Sensor_IDs(:));
+    if size(angles, 1) >= max([sensor_ids; sid])
+        row = sid;
+    else
+        row = find(sensor_ids == sid, 1, 'first');
+    end
+elseif size(angles, 1) >= sid
+    row = sid;
+end
+
+if isempty(row) || row < 1 || row > size(angles, 1)
+    error('Step05:TemplateContract', ...
+        ['Template.Standard_Relative_Angles cannot map CH%d to a row; ' ...
+         'provide direct sensor-indexed rows or Template.Sensor_IDs.'], sid);
+end
+
+theta_std_deg = angles(row, blade_id);
+if ~isscalar(theta_std_deg) || ~isfinite(theta_std_deg)
+    error('Step05:TemplateContract', ...
+        'Template.Standard_Relative_Angles has invalid value for CH%d Blade%d.', ...
+        sid, blade_id);
 end
 end
 
@@ -3145,6 +4716,10 @@ function xc = get_template_xcenter_local(tpl)
 xc = 0;
 if isstruct(tpl) && isfield(tpl, 'xc') && isfinite(tpl.xc)
     xc = tpl.xc;
+elseif isstruct(tpl) && isfield(tpl, 'xc_mm') && isfinite(tpl.xc_mm)
+    xc = tpl.xc_mm;
+elseif isstruct(tpl) && isfield(tpl, 'x_center_mm') && isfinite(tpl.x_center_mm)
+    xc = tpl.x_center_mm;
 end
 end
 
@@ -3167,17 +4742,39 @@ row = struct( ...
     'dx_c_id', NaN, ...
     'd0_id', NaN, ...
     'sensor_eta_max_abs_mm', NaN, ...
+    'decision_score', NaN, ...
+    'static_residual_rmse_mm', NaN, ...
+    'seed_weighted_voltage_rmse', NaN, ...
     'weighted_voltage_rmse', NaN, ...
     'plain_voltage_rmse', NaN, ...
     'second_best_EO_id', NaN, ...
     'second_best_rmse_v', NaN, ...
+    'second_best_decision_score', NaN, ...
+    'eo_decision_score_gap', NaN, ...
+    'eo_decision_score_gap_ratio', NaN, ...
     'eo_rmse_gap_v', NaN, ...
     'eo_rmse_gap_ratio', NaN, ...
     'eo_candidate_count', NaN, ...
     'eo_finite_candidate_count', NaN, ...
     'eo_top_list', "", ...
+    'core_EO_id', NaN, ...
+    'expanded_EO_id', NaN, ...
+    'phase_reference_EO_id', NaN, ...
+    'final_EO_changed_after_expansion', NaN, ...
     'valid_segment_count', NaN, ...
+    'valid_sensor_count', NaN, ...
+    'valid_lap_count', NaN, ...
+    'expected_valid_pass_count', NaN, ...
+    'min_valid_pass_count', NaN, ...
+    'min_valid_sensor_count', NaN, ...
+    'min_valid_lap_count', NaN, ...
+    'valid_pass_fraction', NaN, ...
     'point_count', NaN, ...
+    'vp_point_count', NaN, ...
+    'core_vp_point_count', NaN, ...
+    'expanded_vp_point_count', NaN, ...
+    'vp_screening_policy', "", ...
+    'vp_screening_fallback', "", ...
     'candidate_point_count', NaN, ...
     'core_point_count', NaN, ...
     'expanded_point_count', NaN, ...
@@ -3189,6 +4786,23 @@ row = struct( ...
     'query_guard_mean_mm', NaN, ...
     'query_safe_left_min_mm', NaN, ...
     'query_safe_right_max_mm', NaN, ...
+    'local_A_id', NaN, ...
+    'local_EO_id', NaN, ...
+    'local_fn_id', NaN, ...
+    'local_phi_id_wrapped', NaN, ...
+    'local_dx_c_id', NaN, ...
+    'local_decision_score', NaN, ...
+    'local_weighted_voltage_rmse', NaN, ...
+    'local_plain_voltage_rmse', NaN, ...
+    'local_status', "", ...
+    'local_failure_reason', "", ...
+    'joint_reported_EO_id', NaN, ...
+    'reported_eo_source', "", ...
+    'reported_refit_applied', NaN, ...
+    'reported_refit_status', "", ...
+    'reported_refit_failure_reason', "", ...
+    'reported_vs_local_rmse_delta_v', NaN, ...
+    'reported_vs_local_rmse_ratio', NaN, ...
     'fit_stage', "", ...
     'status', "", ...
     'failure_reason', "");
@@ -3201,9 +4815,14 @@ Wres = struct( ...
     'lap_range', [NaN NaN], ...
     'time_window_s', [NaN NaN], ...
     'Result', [], ...
+    'LocalResult', [], ...
+    'ReportedResult', [], ...
     'CoreResult', [], ...
     'ExpandedResult', [], ...
     'ExpansionInfo', [], ...
+    'EOSelectionInfo', [], ...
+    'CoreCoverage', [], ...
+    'ExpandedCoverage', [], ...
     'CandidateBundlePreview', [], ...
     'BundlePreview', [], ...
     'CoreBundlePreview', [], ...
@@ -3238,6 +4857,11 @@ if isstruct(bundle)
 
     if isfield(bundle, 'valid_pass_count')
         trend_row.valid_segment_count = bundle.valid_pass_count;
+    end
+
+    if isfield(bundle, 'Coverage') && isstruct(bundle.Coverage)
+        trend_row = attach_coverage_to_trend_row_local( ...
+            trend_row, bundle.Coverage);
     end
 end
 
@@ -3294,6 +4918,10 @@ result.sensor_eta_max_abs_mm = NaN;
 result.fn_id = NaN;
 result.rot_freq_mean_hz = NaN;
 result.rot_rpm_mean = NaN;
+result.decision_score = inf;
+result.decision_score_mode = '';
+result.static_residual_rmse_mm = inf;
+result.seed_weighted_voltage_rmse = inf;
 result.weighted_voltage_rmse = inf;
 result.plain_voltage_rmse = inf;
 result.point_count = 0;
@@ -3310,6 +4938,237 @@ result.VPSeedTable = table();
 result.EOAmbiguity = struct();
 result.BundleSummary = struct();
 result.ReconstructionPreview = [];
+end
+
+
+function Summary = make_empty_joint_reported_refit_summary_local()
+Summary = struct( ...
+    'applied', false, ...
+    'policy', '', ...
+    'joint_eo', NaN, ...
+    'joint_status', '', ...
+    'window_count', 0, ...
+    'refit_count', 0, ...
+    'kept_local_count', 0, ...
+    'failed_refit_count', 0, ...
+    'skip_reason', '');
+end
+
+
+function [trend_rows, WindowResult, best, Summary] = apply_joint_reported_eo_refit_local( ...
+    trend_rows, WindowResult, FinalBundleStore, FinalSeedTableStore, ...
+    WindowPlan, JointEOSummary, best, S)
+
+Summary = make_empty_joint_reported_refit_summary_local();
+Summary.policy = getfield_default_local(S, ...
+    'joint_reported_refit_policy', 'refit_each_window_to_joint_eo');
+Summary.joint_eo = getfield_default_local(JointEOSummary, 'best_EO', NaN);
+Summary.joint_status = char(string(getfield_default_local( ...
+    JointEOSummary, 'status', 'empty')));
+
+skip_status = string(getfield_default_local(S, ...
+    'joint_reported_refit_skip_status', {}));
+if isempty(skip_status)
+    skip_status = strings(0, 1);
+end
+
+if ~isfinite(Summary.joint_eo)
+    Summary.skip_reason = 'nonfinite_joint_eo';
+    return;
+end
+
+if any(strcmpi(string(Summary.joint_status), skip_status))
+    Summary.skip_reason = ['joint_status_', Summary.joint_status];
+    return;
+end
+
+Summary.applied = true;
+best = make_failed_result_local('no_joint_reported_window');
+
+for iw = 1:numel(WindowResult)
+    local_result = [];
+    if isfield(WindowResult(iw), 'Result')
+        local_result = WindowResult(iw).Result;
+    end
+
+    if isempty(local_result) || ~isstruct(local_result) || ...
+            ~isfield(local_result, 'status') || ...
+            ~strcmpi(local_result.status, 'ok')
+        continue;
+    end
+
+    Summary.window_count = Summary.window_count + 1;
+
+    bundle = [];
+    seed_table = [];
+    if iw <= numel(FinalBundleStore)
+        bundle = FinalBundleStore{iw};
+    end
+    if iw <= numel(FinalSeedTableStore)
+        seed_table = FinalSeedTableStore{iw};
+    end
+
+    refit_applied = false;
+    reported = local_result;
+    refit_status = 'kept_local_same_eo';
+    refit_failure = '';
+
+    if isempty(bundle) || ~isstruct(bundle) || isempty(seed_table)
+        refit_status = 'failed';
+        refit_failure = 'missing_final_bundle_or_seed_table';
+        Summary.failed_refit_count = Summary.failed_refit_count + 1;
+    elseif isfinite(local_result.EO_id) && local_result.EO_id == Summary.joint_eo
+        Summary.kept_local_count = Summary.kept_local_count + 1;
+    else
+        refit_applied = true;
+        reported_try = refine_direct_template_fit_local( ...
+            bundle, seed_table, Summary.joint_eo, S);
+        if isstruct(reported_try) && isfield(reported_try, 'status') && ...
+                strcmpi(reported_try.status, 'ok')
+            reported = reported_try;
+            Summary.refit_count = Summary.refit_count + 1;
+            refit_status = 'ok';
+        else
+            Summary.failed_refit_count = Summary.failed_refit_count + 1;
+            refit_status = 'failed';
+            refit_failure = getfield_default_local( ...
+                reported_try, 'failure_reason', 'joint_refit_failed');
+        end
+    end
+
+    if iw <= height(WindowPlan)
+        W = WindowPlan(iw, :);
+    else
+        W = table();
+    end
+
+    reported = decorate_joint_reported_result_local( ...
+        reported, local_result, bundle, seed_table, Summary.joint_eo, ...
+        W, iw, S);
+
+    if refit_applied && strcmpi(refit_status, 'failed')
+        reported = local_result;
+    end
+
+    row = build_trend_row_local(iw, W, reported, bundle);
+    row = attach_local_result_to_trend_row_local( ...
+        row, local_result, reported, Summary.joint_eo, ...
+        refit_applied, refit_status, refit_failure);
+    trend_rows(iw) = row;
+
+    WindowResult(iw).LocalResult = local_result;
+    WindowResult(iw).ReportedResult = reported;
+    WindowResult(iw).Result = reported;
+
+    if strcmpi(reported.status, 'ok')
+        score = getfield_default_local(reported, ...
+            'decision_score', reported.weighted_voltage_rmse);
+        best_score = getfield_default_local(best, ...
+            'decision_score', best.weighted_voltage_rmse);
+        if isfinite(score) && (~isfinite(best_score) || ...
+                score < best_score || ...
+                (abs(score - best_score) <= eps(max(abs(best_score), 1)) && ...
+                reported.weighted_voltage_rmse < best.weighted_voltage_rmse))
+            best = reported;
+            best.window_id = iw;
+            best.lap_range = [W.lap_start, W.lap_end];
+            best.time_window_s = [W.time_start_s, W.time_end_s];
+        end
+    end
+end
+
+if isfield(best, 'status') && strcmpi(best.status, 'failed')
+    best = make_failed_result_local('no_valid_joint_reported_window');
+end
+end
+
+
+function reported = decorate_joint_reported_result_local( ...
+    reported, local_result, bundle, seed_table, joint_eo, W, iw, S)
+
+if isempty(reported) || ~isstruct(reported)
+    reported = local_result;
+end
+
+copy_fields = {'fit_stage', 'CoreEO', 'ExpandedEO', 'PhaseReferenceEO', ...
+    'FinalEOChangedAfterExpansion', 'CoreVPPointCount', 'CoreVPPolicy', ...
+    'CoreVPFallback', 'ExpandedVPPointCount', 'ExpandedVPPolicy', ...
+    'ExpandedVPFallback', 'VPPointCount', 'VPPolicy', 'VPFallback', ...
+    'BundleSummary'};
+
+for i = 1:numel(copy_fields)
+    f = copy_fields{i};
+    if isfield(local_result, f)
+        reported.(f) = local_result.(f);
+    end
+end
+
+reported.window_id = iw;
+if istable(W) && ~isempty(W)
+    reported.lap_range = [W.lap_start, W.lap_end];
+    reported.time_window_s = [W.time_start_s, W.time_end_s];
+end
+
+reported.ReportedEOSelectionPolicy = 'joint_eo_summary_refit';
+reported.ReportedEO_id = joint_eo;
+
+if isfield(local_result, 'CandidateTable')
+    reported.LocalCandidateTable = local_result.CandidateTable;
+    reported.CandidateTable = local_result.CandidateTable;
+end
+
+if isfield(local_result, 'EOAmbiguity')
+    reported.LocalEOAmbiguity = local_result.EOAmbiguity;
+    reported.EOAmbiguity = local_result.EOAmbiguity;
+end
+
+if ~isfield(reported, 'VPSeedTable') || isempty(reported.VPSeedTable)
+    if ~isempty(seed_table) && isstruct(seed_table)
+        reported.VPSeedTable = struct2table(seed_table);
+    elseif isfield(local_result, 'VPSeedTable')
+        reported.VPSeedTable = local_result.VPSeedTable;
+    end
+end
+
+if isstruct(bundle) && strcmpi(getfield_default_local(reported, 'status', ''), 'ok')
+    reported.ReconstructionPreview = build_reconstruction_preview_local( ...
+        bundle, reported, S.store_bundle_preview_points);
+end
+end
+
+
+function row = attach_local_result_to_trend_row_local( ...
+    row, local_result, reported, joint_eo, refit_applied, ...
+    refit_status, refit_failure)
+
+row.local_status = string(getfield_default_local(local_result, 'status', ''));
+row.local_failure_reason = string(getfield_default_local( ...
+    local_result, 'failure_reason', ''));
+row.local_A_id = getfield_default_local(local_result, 'A_id', NaN);
+row.local_EO_id = getfield_default_local(local_result, 'EO_id', NaN);
+row.local_fn_id = getfield_default_local(local_result, 'fn_id', NaN);
+row.local_phi_id_wrapped = getfield_default_local( ...
+    local_result, 'phi_id_wrapped', NaN);
+row.local_dx_c_id = getfield_default_local(local_result, 'dx_c_id', NaN);
+row.local_decision_score = getfield_default_local( ...
+    local_result, 'decision_score', NaN);
+row.local_weighted_voltage_rmse = getfield_default_local( ...
+    local_result, 'weighted_voltage_rmse', NaN);
+row.local_plain_voltage_rmse = getfield_default_local( ...
+    local_result, 'plain_voltage_rmse', NaN);
+
+row.joint_reported_EO_id = joint_eo;
+row.reported_eo_source = "joint_eo_refit";
+row.reported_refit_applied = double(refit_applied);
+row.reported_refit_status = string(refit_status);
+row.reported_refit_failure_reason = string(refit_failure);
+
+reported_rmse = getfield_default_local(reported, ...
+    'weighted_voltage_rmse', NaN);
+local_rmse = row.local_weighted_voltage_rmse;
+row.reported_vs_local_rmse_delta_v = reported_rmse - local_rmse;
+row.reported_vs_local_rmse_ratio = row.reported_vs_local_rmse_delta_v ./ ...
+    max(abs(local_rmse), eps);
 end
 
 
@@ -3337,6 +5196,10 @@ if isstruct(bundle)
 
     if isfield(bundle, 'valid_pass_count')
         row.valid_segment_count = bundle.valid_pass_count;
+    end
+
+    if isfield(bundle, 'Coverage') && isstruct(bundle.Coverage)
+        row = attach_coverage_to_trend_row_local(row, bundle.Coverage);
     end
 end
 
@@ -3370,12 +5233,26 @@ if isfield(result, 'EOAmbiguity') && isstruct(result.EOAmbiguity)
     A = result.EOAmbiguity;
     row.second_best_EO_id = getfield_default_local(A, 'second_best_eo', NaN);
     row.second_best_rmse_v = getfield_default_local(A, 'second_best_rmse_v', NaN);
+    row.second_best_decision_score = getfield_default_local(A, 'second_best_decision_score', NaN);
+    row.eo_decision_score_gap = getfield_default_local(A, 'decision_score_gap', NaN);
+    row.eo_decision_score_gap_ratio = getfield_default_local(A, 'decision_score_gap_ratio', NaN);
     row.eo_rmse_gap_v = getfield_default_local(A, 'rmse_gap_v', NaN);
     row.eo_rmse_gap_ratio = getfield_default_local(A, 'rmse_gap_ratio', NaN);
     row.eo_candidate_count = getfield_default_local(A, 'candidate_count', NaN);
     row.eo_finite_candidate_count = getfield_default_local(A, 'finite_candidate_count', NaN);
     row.eo_top_list = string(getfield_default_local(A, 'top_eo_list', ""));
 end
+
+row.core_EO_id = getfield_default_local(result, 'CoreEO', NaN);
+row.expanded_EO_id = getfield_default_local(result, 'ExpandedEO', NaN);
+row.phase_reference_EO_id = getfield_default_local(result, 'PhaseReferenceEO', NaN);
+row.final_EO_changed_after_expansion = ...
+    double(getfield_default_local(result, 'FinalEOChangedAfterExpansion', false));
+row.vp_point_count = getfield_default_local(result, 'VPPointCount', NaN);
+row.core_vp_point_count = getfield_default_local(result, 'CoreVPPointCount', NaN);
+row.expanded_vp_point_count = getfield_default_local(result, 'ExpandedVPPointCount', NaN);
+row.vp_screening_policy = string(getfield_default_local(result, 'VPPolicy', ""));
+row.vp_screening_fallback = string(getfield_default_local(result, 'VPFallback', ""));
 
 if strcmpi(result.status, 'ok')
     row.A_id = result.A_id;
@@ -3385,10 +5262,29 @@ if strcmpi(result.status, 'ok')
     row.dx_c_id = result.dx_c_id;
     row.d0_id = result.d0_id;
     row.sensor_eta_max_abs_mm = result.sensor_eta_max_abs_mm;
+    row.decision_score = getfield_default_local(result, 'decision_score', NaN);
+    row.static_residual_rmse_mm = getfield_default_local(result, 'static_residual_rmse_mm', NaN);
+    row.seed_weighted_voltage_rmse = getfield_default_local(result, 'seed_weighted_voltage_rmse', NaN);
     row.weighted_voltage_rmse = result.weighted_voltage_rmse;
     row.plain_voltage_rmse = result.plain_voltage_rmse;
     row.point_count = result.point_count;
     row.valid_segment_count = result.valid_segment_count;
+    row.local_A_id = row.A_id;
+    row.local_EO_id = row.EO_id;
+    row.local_fn_id = row.fn_id;
+    row.local_phi_id_wrapped = row.phi_id_wrapped;
+    row.local_dx_c_id = row.dx_c_id;
+    row.local_decision_score = row.decision_score;
+    row.local_weighted_voltage_rmse = row.weighted_voltage_rmse;
+    row.local_plain_voltage_rmse = row.plain_voltage_rmse;
+    row.local_status = string(result.status);
+    row.local_failure_reason = string(result.failure_reason);
+    row.reported_eo_source = "realtime_window_local";
+    row.reported_refit_applied = 0;
+
+    if isfield(bundle, 'Coverage') && isstruct(bundle.Coverage)
+        row = attach_coverage_to_trend_row_local(row, bundle.Coverage);
+    end
 
     if isfield(result, 'core_point_count')
         row.core_point_count = result.core_point_count;
@@ -3398,6 +5294,97 @@ if strcmpi(result.status, 'ok')
         row.expanded_point_count = result.expanded_point_count;
     end
 end
+end
+
+
+function Coverage = build_bundle_coverage_local(bundle, S)
+Coverage = struct();
+Coverage.ok = false;
+Coverage.failure_reason = 'empty_bundle';
+Coverage.valid_pass_count = 0;
+Coverage.valid_sensor_count = 0;
+Coverage.valid_lap_count = 0;
+Coverage.expected_valid_pass_count = S.window_laps * numel(S.analysis_sensors);
+Coverage.min_valid_pass_count = getfield_default_local( ...
+    S, 'min_valid_pass_count', 1);
+Coverage.min_valid_sensor_count = getfield_default_local( ...
+    S, 'min_valid_sensor_count', min(2, numel(S.analysis_sensors)));
+Coverage.min_valid_lap_count = getfield_default_local( ...
+    S, 'min_valid_lap_count', min(2, S.window_laps));
+Coverage.valid_pass_fraction = 0;
+Coverage.valid_pass_ids = [];
+Coverage.valid_sensor_ids = [];
+Coverage.valid_laps = [];
+
+if isempty(bundle) || ~isstruct(bundle) || ~isfield(bundle, 'pass_id') || ...
+        isempty(bundle.pass_id)
+    return;
+end
+
+point_valid = true(size(bundle.pass_id(:)));
+if isfield(bundle, 'finite_mask') && numel(bundle.finite_mask) == numel(point_valid)
+    point_valid = point_valid & bundle.finite_mask(:);
+end
+if isfield(bundle, 'x') && numel(bundle.x) == numel(point_valid)
+    point_valid = point_valid & isfinite(bundle.x(:));
+end
+if isfield(bundle, 'v') && numel(bundle.v) == numel(point_valid)
+    point_valid = point_valid & isfinite(bundle.v(:));
+end
+
+Coverage.valid_pass_ids = unique(bundle.pass_id(point_valid & ...
+    isfinite(bundle.pass_id(:))));
+Coverage.valid_pass_count = numel(Coverage.valid_pass_ids);
+
+if isfield(bundle, 'sensor_id') && numel(bundle.sensor_id) == numel(point_valid)
+    Coverage.valid_sensor_ids = unique(bundle.sensor_id(point_valid & ...
+        isfinite(bundle.sensor_id(:))));
+    Coverage.valid_sensor_count = numel(Coverage.valid_sensor_ids);
+end
+
+if isfield(bundle, 'analysis_lap') && numel(bundle.analysis_lap) == numel(point_valid)
+    Coverage.valid_laps = unique(bundle.analysis_lap(point_valid & ...
+        isfinite(bundle.analysis_lap(:))));
+    Coverage.valid_lap_count = numel(Coverage.valid_laps);
+end
+
+Coverage.valid_pass_fraction = Coverage.valid_pass_count / ...
+    max(Coverage.expected_valid_pass_count, 1);
+
+if Coverage.valid_pass_count < Coverage.min_valid_pass_count
+    Coverage.failure_reason = 'too_few_valid_core_passes';
+elseif Coverage.valid_sensor_count < Coverage.min_valid_sensor_count
+    Coverage.failure_reason = 'too_few_valid_core_sensors';
+elseif Coverage.valid_lap_count < Coverage.min_valid_lap_count
+    Coverage.failure_reason = 'too_few_valid_core_laps';
+else
+    Coverage.ok = true;
+    Coverage.failure_reason = '';
+end
+end
+
+
+function row = attach_coverage_to_trend_row_local(row, Coverage)
+if isempty(Coverage) || ~isstruct(Coverage)
+    return;
+end
+
+row.valid_segment_count = getfield_default_local( ...
+    Coverage, 'valid_pass_count', row.valid_segment_count);
+row.valid_sensor_count = getfield_default_local( ...
+    Coverage, 'valid_sensor_count', row.valid_sensor_count);
+row.valid_lap_count = getfield_default_local( ...
+    Coverage, 'valid_lap_count', row.valid_lap_count);
+row.expected_valid_pass_count = getfield_default_local( ...
+    Coverage, 'expected_valid_pass_count', row.expected_valid_pass_count);
+row.min_valid_pass_count = getfield_default_local( ...
+    Coverage, 'min_valid_pass_count', row.min_valid_pass_count);
+row.min_valid_sensor_count = getfield_default_local( ...
+    Coverage, 'min_valid_sensor_count', row.min_valid_sensor_count);
+row.min_valid_lap_count = getfield_default_local( ...
+    Coverage, 'min_valid_lap_count', row.min_valid_lap_count);
+row.valid_pass_fraction = getfield_default_local( ...
+    Coverage, 'valid_pass_fraction', row.valid_pass_fraction);
 end
 
 
@@ -3567,6 +5554,7 @@ S.weight_floor = 0.05;
 S.overshoot_penalty_weight = 0;
 S.sensor_eta_reg_weight_v_per_mm = 0;
 S.invalid_query_penalty_scale = 5;
+S.template_interp_method = 'pchip';
 end
 
 
@@ -3574,85 +5562,190 @@ function Joint = build_joint_eo_summary_local(WindowResult, S)
 if nargin < 2
     S = struct();
 end
+
 joint_gap_threshold = getfield_default_local(S, ...
     'joint_eo_gap_ratio_threshold', 0.03);
+missing_window_penalty = getfield_default_local(S, ...
+    'joint_missing_window_penalty', 0.50);
+min_window_fraction = getfield_default_local(S, ...
+    'joint_min_window_fraction', 0.50);
+
 Joint = struct( ...
-    'status', 'unavailable', ...
+    'status', 'empty', ...
     'dominant_eo', NaN, ...
+    'best_EO', NaN, ...
+    'second_EO', NaN, ...
     'mean_objective', NaN, ...
     'second_best_eo', NaN, ...
     'second_best_mean_objective', NaN, ...
+    'best_mean_decision_score', NaN, ...
+    'second_mean_decision_score', NaN, ...
+    'best_mean_weighted_rmse', NaN, ...
+    'second_mean_weighted_rmse', NaN, ...
+    'best_joint_score', NaN, ...
+    'second_joint_score', NaN, ...
     'gap_ratio', NaN, ...
     'gap_ratio_threshold', joint_gap_threshold, ...
+    'joint_missing_window_penalty', missing_window_penalty, ...
+    'joint_min_window_fraction', min_window_fraction, ...
     'candidate_count', 0, ...
     'window_count', 0, ...
-    'candidate_table', table());
+    'valid_window_count', 0, ...
+    'candidate_table', table(), ...
+    'EOTable', table());
 
 if isempty(WindowResult)
     return;
 end
 
-rows = [];
+eo_vec = [];
+decision_vec = [];
+weighted_rmse_vec = [];
+objective_vec = [];
+window_vec = [];
+
 for iw = 1:numel(WindowResult)
     if ~isfield(WindowResult(iw), 'Result') || isempty(WindowResult(iw).Result) || ...
             ~isfield(WindowResult(iw).Result, 'CandidateTable')
         continue;
     end
+
     C = WindowResult(iw).Result.CandidateTable;
-    if isempty(C) || ~all(ismember({'EO','objective_score'}, C.Properties.VariableNames))
+    if isempty(C) || ~istable(C) || ...
+            ~ismember('EO', C.Properties.VariableNames)
         continue;
     end
-    for j = 1:height(C)
-        if isfinite(C.EO(j)) && isfinite(C.objective_score(j))
-            rows = [rows; iw, C.EO(j), C.objective_score(j)]; %#ok<AGROW>
-        end
+
+    if ismember('weighted_voltage_rmse', C.Properties.VariableNames)
+        score = C.weighted_voltage_rmse;
+    elseif ismember('objective_score', C.Properties.VariableNames)
+        score = C.objective_score;
+    elseif ismember('decision_score', C.Properties.VariableNames)
+        score = C.decision_score;
+    elseif ismember('static_residual_rmse_mm', C.Properties.VariableNames)
+        score = C.static_residual_rmse_mm;
+    else
+        continue;
     end
+
+    if ismember('weighted_voltage_rmse', C.Properties.VariableNames)
+        weighted_rmse = C.weighted_voltage_rmse;
+    else
+        weighted_rmse = score;
+    end
+
+    if ismember('objective_score', C.Properties.VariableNames)
+        objective = C.objective_score;
+    else
+        objective = score;
+    end
+
+    ok = isfinite(C.EO) & isfinite(score) & isfinite(weighted_rmse);
+    if ismember('status', C.Properties.VariableNames)
+        ok = ok & strcmpi(string(C.status), "ok");
+    end
+
+    if ~any(ok)
+        continue;
+    end
+
+    eo_vec = [eo_vec; C.EO(ok)]; %#ok<AGROW>
+    decision_vec = [decision_vec; score(ok)]; %#ok<AGROW>
+    weighted_rmse_vec = [weighted_rmse_vec; weighted_rmse(ok)]; %#ok<AGROW>
+    objective_vec = [objective_vec; objective(ok)]; %#ok<AGROW>
+    window_vec = [window_vec; repmat(iw, nnz(ok), 1)]; %#ok<AGROW>
 end
 
-if isempty(rows)
+if isempty(eo_vec)
+    Joint.status = 'no_valid_candidate_table';
     return;
 end
 
-eos = unique(rows(:,2));
-summary_rows = [];
-for i = 1:numel(eos)
-    eo = eos(i);
-    E = rows(rows(:,2) == eo, :);
-    if isempty(E)
-        continue;
-    end
-    summary_rows = [summary_rows; eo, size(E,1), mean(E(:,3)), median(E(:,3)), std(E(:,3))]; %#ok<AGROW>
+valid_window_count = numel(unique(window_vec));
+eo_list = unique(eo_vec(:));
+
+rows = repmat(struct( ...
+    'EO', NaN, ...
+    'window_count', 0, ...
+    'mean_decision_score', NaN, ...
+    'median_decision_score', NaN, ...
+    'min_decision_score', NaN, ...
+    'mean_weighted_rmse', NaN, ...
+    'median_weighted_rmse', NaN, ...
+    'min_weighted_rmse', NaN, ...
+    'mean_objective', NaN, ...
+    'median_objective', NaN, ...
+    'std_objective', NaN, ...
+    'window_fraction', NaN, ...
+    'low_coverage_flag', false, ...
+    'joint_score', NaN), numel(eo_list), 1);
+
+for i = 1:numel(eo_list)
+    eo = eo_list(i);
+    m = eo_vec == eo;
+    rows(i).EO = eo;
+    rows(i).window_count = numel(unique(window_vec(m)));
+    rows(i).mean_decision_score = mean(decision_vec(m), 'omitnan');
+    rows(i).median_decision_score = median(decision_vec(m), 'omitnan');
+    rows(i).min_decision_score = min(decision_vec(m), [], 'omitnan');
+    rows(i).mean_weighted_rmse = mean(weighted_rmse_vec(m), 'omitnan');
+    rows(i).median_weighted_rmse = median(weighted_rmse_vec(m), 'omitnan');
+    rows(i).min_weighted_rmse = min(weighted_rmse_vec(m), [], 'omitnan');
+    rows(i).mean_objective = mean(objective_vec(m), 'omitnan');
+    rows(i).median_objective = median(objective_vec(m), 'omitnan');
+    rows(i).std_objective = std(objective_vec(m), 0, 'omitnan');
+    rows(i).window_fraction = rows(i).window_count / max(valid_window_count, 1);
+    rows(i).low_coverage_flag = rows(i).window_fraction < min_window_fraction;
+    rows(i).joint_score = rows(i).mean_decision_score .* ...
+        (1 + missing_window_penalty .* (1 - rows(i).window_fraction));
 end
 
-if isempty(summary_rows)
-    return;
+T = struct2table(rows);
+T = sortrows(T, { ...
+    'low_coverage_flag', ...
+    'joint_score', ...
+    'median_decision_score', ...
+    'EO'}, ...
+    {'ascend', 'ascend', 'ascend', 'ascend'});
+
+Joint.status = 'ok';
+Joint.dominant_eo = T.EO(1);
+Joint.best_EO = T.EO(1);
+Joint.best_mean_decision_score = T.mean_decision_score(1);
+Joint.best_mean_weighted_rmse = T.mean_weighted_rmse(1);
+Joint.best_joint_score = T.joint_score(1);
+Joint.mean_objective = T.mean_objective(1);
+Joint.candidate_count = height(T);
+Joint.window_count = valid_window_count;
+Joint.valid_window_count = valid_window_count;
+Joint.candidate_table = T;
+Joint.EOTable = T;
+
+if T.low_coverage_flag(1)
+    Joint.status = 'low_window_coverage_ambiguous';
 end
 
-[~, order] = sort(summary_rows(:,3), 'ascend');
-summary_rows = summary_rows(order, :);
-Joint.candidate_table = array2table(summary_rows, ...
-    'VariableNames', {'EO','window_count','mean_objective','median_objective','std_objective'});
-Joint.status = 'ambiguous';
-Joint.dominant_eo = summary_rows(1, 1);
-Joint.mean_objective = summary_rows(1, 3);
-Joint.candidate_count = size(summary_rows, 1);
-Joint.window_count = max(rows(:,1));
-if size(summary_rows, 1) >= 2
-    Joint.second_best_eo = summary_rows(2, 1);
-    Joint.second_best_mean_objective = summary_rows(2, 3);
-    Joint.gap_ratio = (summary_rows(2, 3) - summary_rows(1, 3)) ./ max(abs(summary_rows(1, 3)), eps);
-    if isfinite(Joint.gap_ratio) && Joint.gap_ratio >= joint_gap_threshold
-        Joint.status = 'ok';
+if height(T) >= 2
+    Joint.second_EO = T.EO(2);
+    Joint.second_best_eo = T.EO(2);
+    Joint.second_mean_decision_score = T.mean_decision_score(2);
+    Joint.second_mean_weighted_rmse = T.mean_weighted_rmse(2);
+    Joint.second_best_mean_objective = T.mean_objective(2);
+    Joint.second_joint_score = T.joint_score(2);
+    Joint.gap_ratio = (T.joint_score(2) - T.joint_score(1)) ./ ...
+        max(abs(T.joint_score(1)), eps);
+
+    if Joint.gap_ratio < joint_gap_threshold && ...
+            ~strcmpi(Joint.status, 'low_window_coverage_ambiguous')
+        Joint.status = 'low_gap_ambiguous';
     end
-else
-    Joint.status = 'ok';
 end
 end
 
 
 function Summary = build_resonance_summary_local(Trend, JointEOSummary)
 Summary = struct();
-if nargin < 2
+if nargin < 2 || isempty(JointEOSummary)
     JointEOSummary = struct();
 end
 
@@ -3660,6 +5753,14 @@ if isempty(Trend) || height(Trend) == 0
     Summary.valid_window_count = 0;
     Summary.best_window_id = NaN;
     Summary.dominant_eo = NaN;
+    Summary.trend_dominant_eo = NaN;
+    Summary.joint_best_eo = NaN;
+    Summary.joint_status = 'empty';
+    Summary.joint_eo_status = "";
+    Summary.joint_eo_gap_ratio = NaN;
+    Summary.reported_eo = NaN;
+    Summary.reported_freq_hz = NaN;
+    Summary.reported_eo_source = 'none';
     Summary.mean_freq_hz = NaN;
     Summary.median_freq_hz = NaN;
     return;
@@ -3669,22 +5770,20 @@ valid = strcmpi(string(Trend.status), 'ok') & ...
         isfinite(Trend.weighted_voltage_rmse);
 
 Summary.valid_window_count = nnz(valid);
+Summary.joint_best_eo = getfield_default_local(JointEOSummary, 'best_EO', NaN);
+Summary.joint_status = getfield_default_local(JointEOSummary, 'status', 'empty');
+Summary.joint_eo_status = string(Summary.joint_status);
+Summary.joint_eo_gap_ratio = getfield_default_local(JointEOSummary, 'gap_ratio', NaN);
 
 if ~any(valid)
     Summary.best_window_id = NaN;
-    if isfield(JointEOSummary, 'dominant_eo') && isfinite(JointEOSummary.dominant_eo) && ...
-            strcmpi(string(getfield_default_local(JointEOSummary, 'status', '')), "ok")
-        Summary.dominant_eo = JointEOSummary.dominant_eo;
-        rot_mean = mean(Trend.rot_freq_mean_hz(isfinite(Trend.rot_freq_mean_hz)), 'omitnan');
-        Summary.mean_freq_hz = JointEOSummary.dominant_eo .* rot_mean;
-        Summary.median_freq_hz = Summary.mean_freq_hz;
-        Summary.joint_eo_status = string(getfield_default_local(JointEOSummary, 'status', 'ok'));
-        Summary.joint_eo_gap_ratio = getfield_default_local(JointEOSummary, 'gap_ratio', NaN);
-    else
-        Summary.dominant_eo = NaN;
-        Summary.mean_freq_hz = NaN;
-        Summary.median_freq_hz = NaN;
-    end
+    Summary.dominant_eo = NaN;
+    Summary.trend_dominant_eo = NaN;
+    Summary.reported_eo = NaN;
+    Summary.reported_freq_hz = NaN;
+    Summary.reported_eo_source = 'no_valid_realtime_trend';
+    Summary.mean_freq_hz = NaN;
+    Summary.median_freq_hz = NaN;
     return;
 end
 
@@ -3696,11 +5795,41 @@ Summary.best_window_id = Trend.window_id(valid_rows(local_best));
 
 eos = Trend.EO_id(valid);
 
-Summary.dominant_eo = mode(eos);
+Summary.trend_dominant_eo = mode(eos);
+Summary.dominant_eo = Summary.trend_dominant_eo;
 Summary.mean_freq_hz = mean(Trend.fn_id(valid), 'omitnan');
 Summary.median_freq_hz = median(Trend.fn_id(valid), 'omitnan');
-Summary.joint_eo_status = string(getfield_default_local(JointEOSummary, 'status', ''));
-Summary.joint_eo_gap_ratio = getfield_default_local(JointEOSummary, 'gap_ratio', NaN);
+Summary.reported_eo = Summary.trend_dominant_eo;
+Summary.reported_eo_source = 'realtime_trend_mode';
+
+Summary.reported_freq_hz = compute_reported_frequency_local( ...
+    Trend, valid, Summary.reported_eo);
+end
+
+
+function f_hz = compute_reported_frequency_local(Trend, valid, reported_eo)
+f_hz = NaN;
+
+if isempty(Trend) || ~isfinite(reported_eo)
+    return;
+end
+
+same_eo = valid & isfinite(Trend.EO_id) & Trend.EO_id == reported_eo;
+
+if any(same_eo) && ismember('fn_id', Trend.Properties.VariableNames)
+    f_hz = median(Trend.fn_id(same_eo), 'omitnan');
+end
+
+if isfinite(f_hz)
+    return;
+end
+
+if ismember('rot_freq_mean_hz', Trend.Properties.VariableNames)
+    rot_hz = median(Trend.rot_freq_mean_hz(valid), 'omitnan');
+    if isfinite(rot_hz)
+        f_hz = reported_eo * rot_hz;
+    end
+end
 end
 
 

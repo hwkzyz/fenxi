@@ -1,0 +1,6 @@
+chanEnableCount:1
+SampleRate:2000.0
+SampleLen:6400
+0rangeMaxValue:5000.0
+0rangeMinValue:-5000.0
+resolution:12

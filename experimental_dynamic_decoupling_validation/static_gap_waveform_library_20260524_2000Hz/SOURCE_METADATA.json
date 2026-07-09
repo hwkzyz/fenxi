@@ -1,0 +1,286 @@
+{
+  "libraryName": "static_gap_waveform_library_20260524_2000Hz",
+  "sourceCsv": "E:\\试验数据\\20260521标定数据\\20260524标定_低采样率\\Data\\low_sample_gap_visualization\\same_blade_waveforms_across_gaps_2000Hz.csv",
+  "copiedRawCsv": "raw_source/same_blade_waveforms_across_gaps_2000Hz.csv",
+  "recordedGapMmDefinition": "gapMm field in source CSV",
+  "trueReferenceGapMmDefinition": "recordedGapMm - 0.2 mm, following reference_blade_gap_analysis/load_common_data.m",
+  "gapZeroOffsetMm": 0.2,
+  "sampleRateHz": 2000,
+  "selectedChannel": 1,
+  "selectedChannelIndexing": "MATLAB 1-based channel index; labelled as CH0 in the original visualization script",
+  "timeCoordinate": "timeRelative_s, centered at detected peak; this is the x-grid used by reference_blade_gap_analysis",
+  "voltageUnit": "mV",
+  "sourceAnalysisFolder": "E:\\0小论文+程序\\0博士期间小论文+程序\\间隙和振动解耦\\reference_blade_gap_analysis",
+  "sourceLoader": "E:\\0小论文+程序\\0博士期间小论文+程序\\间隙和振动解耦\\reference_blade_gap_analysis\\load_common_data.m",
+  "notes": [
+    "This staged library is copied from the original experiment-data folder for Step05 response-surface construction.",
+    "Use trueReferenceGapMm as the training gap coordinate for the decoupling paper.",
+    "For dynamic 20250527 data, this library supplies gap sensitivity and response-surface shape; sensor-specific scaling/alignment should be checked in Step05 diagnostics."
+  ],
+  "gaps": [
+    {
+      "recordedGapMm": 1.1,
+      "trueReferenceGapMm": 0.9000000000000001,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_1p10mm_true_0p90mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 1.15,
+      "trueReferenceGapMm": 0.95,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_1p15mm_true_0p95mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 1.2,
+      "trueReferenceGapMm": 1.0,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_1p20mm_true_1p00mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 1.3,
+      "trueReferenceGapMm": 1.1,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_1p30mm_true_1p10mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 1.4,
+      "trueReferenceGapMm": 1.2,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_1p40mm_true_1p20mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 1.5,
+      "trueReferenceGapMm": 1.3,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_1p50mm_true_1p30mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 1.6,
+      "trueReferenceGapMm": 1.4000000000000001,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_1p60mm_true_1p40mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 1.7,
+      "trueReferenceGapMm": 1.5,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_1p70mm_true_1p50mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 1.8,
+      "trueReferenceGapMm": 1.6,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_1p80mm_true_1p60mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 1.9,
+      "trueReferenceGapMm": 1.7,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_1p90mm_true_1p70mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 2.0,
+      "trueReferenceGapMm": 1.8,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_2p00mm_true_1p80mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 2.1,
+      "trueReferenceGapMm": 1.9000000000000001,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_2p10mm_true_1p90mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 2.2,
+      "trueReferenceGapMm": 2.0,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_2p20mm_true_2p00mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 2.3,
+      "trueReferenceGapMm": 2.0999999999999996,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_2p30mm_true_2p10mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 2.4,
+      "trueReferenceGapMm": 2.1999999999999997,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_2p40mm_true_2p20mm/waveforms.csv"
+    },
+    {
+      "recordedGapMm": 2.5,
+      "trueReferenceGapMm": 2.3,
+      "rowCount": 12006,
+      "bladeIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "relativeCsv": "by_recorded_gap/recorded_2p50mm_true_2p30mm/waveforms.csv"
+    }
+  ],
+  "sourceDataFolder": "E:\\试验数据\\20260521标定数据\\20260524标定_低采样率\\Data",
+  "copiedRawBinaryFolder": "raw_binary_source",
+  "rawBinarySourceFiles": [
+    "ACTS1000_data_1_15mm.bin",
+    "ACTS1000_data_1_15mm_header.txt",
+    "ACTS1000_data_1_1mm.bin",
+    "ACTS1000_data_1_1mm_header.txt",
+    "ACTS1000_data_1_2mm.bin",
+    "ACTS1000_data_1_2mm_header.txt",
+    "ACTS1000_data_1_3mm.bin",
+    "ACTS1000_data_1_3mm_header.txt",
+    "ACTS1000_data_1_4mm.bin",
+    "ACTS1000_data_1_4mm_header.txt",
+    "ACTS1000_data_1_5mm.bin",
+    "ACTS1000_data_1_5mm_header.txt",
+    "ACTS1000_data_1_6mm.bin",
+    "ACTS1000_data_1_6mm_header.txt",
+    "ACTS1000_data_1_7mm.bin",
+    "ACTS1000_data_1_7mm_header.txt",
+    "ACTS1000_data_1_8mm.bin",
+    "ACTS1000_data_1_8mm_header.txt",
+    "ACTS1000_data_1_9mm.bin",
+    "ACTS1000_data_1_9mm_header.txt",
+    "ACTS1000_data_2_1mm.bin",
+    "ACTS1000_data_2_1mm_header.txt",
+    "ACTS1000_data_2_2mm.bin",
+    "ACTS1000_data_2_2mm_header.txt",
+    "ACTS1000_data_2_3mm.bin",
+    "ACTS1000_data_2_3mm_header.txt",
+    "ACTS1000_data_2_4mm.bin",
+    "ACTS1000_data_2_4mm_header.txt",
+    "ACTS1000_data_2_5mm.bin",
+    "ACTS1000_data_2_5mm_header.txt",
+    "ACTS1000_data_2mm.bin",
+    "ACTS1000_data_2mm_header.txt",
+    "Analyze data saved by ARTSCOPE software(1).m",
+    "tmp_peak_numbering_diagnostics.m",
+    "visualize_low_sample_gap_waveforms.m"
+  ],
+  "rawBinarySourcePurpose": "Archived copy of the original ARTSCOPE binary/header files and MATLAB conversion scripts. Step05 normally reads the staged CSV, but these files allow the gap waveform library to be regenerated and audited."
+}

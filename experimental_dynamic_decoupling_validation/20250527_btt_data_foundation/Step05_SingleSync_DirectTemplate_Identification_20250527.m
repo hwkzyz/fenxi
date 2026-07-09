@@ -1,22 +1,25 @@
-clc; clear; close all;
+clc; close all;
 
 %STEP05_SINGLESYNC_DIRECTTEMPLATE_IDENTIFICATION_20250527
-% VERSION: QUERYSAFE_TWOSTAGE_V4_FULLRAW_20260702
+% VERSION: FOUNDATION_MAINPULSE_ADAPTIVE_FIXEDJOINTETA_20260707
 %
 % Key logic:
 %   1. High-speed waveform extraction follows the original OPRCenterStd
 %      DynamicMap route: fixed window around target blade passage time.
 %   2. No within-pulse uniform downsampling is applied; all raw samples in
 %      the fixed time window are mapped before x-domain masks.
-%   3. No dynamic-gradient / time-gradient / peak-quantile mask is used as
-%      the main fitting-point selector.
-%   4. Core bundle uses a query-safe shrunken region:
-%          core_mask = finite & inside_domain & inside_query_guard
-%   5. Optional expanded bundle uses phase-safe x_query:
+%   3. Core fitting uses the complete per-pass main pulse waveform, not
+%      pulse background and not only high-gradient/peak points:
+%          core_mask = finite & main_pulse & inside_domain & inside_query_guard
+%   4. VP scans all EO values without sensor eta; an adaptive EO set enters
+%      full nonlinear refinement.
+%   5. The formal Step05 route uses a fixed residual static sensor eta_s
+%      calibrated from dynamic NoEta residuals. NoEta/free-eta/Step04-xc
+%      variants belong in comparison scripts, not this entry.
+%   6. Optional expanded bundle uses active-model phase-safe x_query:
 %          x_query = x - dx_c - eta_s - A*sin(EO*theta + phi)
-%      and keeps points whose x_query stays inside the template domain.
-%   6. dynamic_effective_mask and main_pulse_mask are saved only for
-%      diagnostics unless S.core_mask_mode='legacy_base_query_safe'.
+%      and only expands per-pass main pulse points whose x_query stays
+%      inside the template domain.
 %
 % Forward model:
 %   V_i ~= T_{sensor,blade}(x_i - dx_c - eta_s - A*sin(EO*theta_i + phi))
@@ -28,7 +31,8 @@ cfg = BTTProjectConfig_20250527();
 
 %% Step05 local settings
 S = struct();
-S.version = 'QUERYSAFE_TWOSTAGE_V4_FULLRAW_20260702';
+S.method_name = 'foundation_mainpulse_adaptive_fixed_joint_static_eta';
+S.version = 'FOUNDATION_MAINPULSE_ADAPTIVE_FIXEDJOINTETA_20260707';
 
 S.show_plots = true;
 S.save_figures = cfg.save_figures;
@@ -65,25 +69,87 @@ if ~isempty(save_figures_env)
     S.save_figures = any(strcmpi(save_figures_env, {'1', 'true', 'yes', 'on'}));
 end
 
+debug_max_windows_env = strtrim(getenv('STEP05_DEBUG_MAX_WINDOWS'));
+if ~isempty(debug_max_windows_env)
+    parsed_debug_windows = str2double(debug_max_windows_env);
+    if isfinite(parsed_debug_windows) && parsed_debug_windows > 0
+        S.debug_max_windows = parsed_debug_windows;
+    end
+end
+
+target_blades_env = strtrim(getenv('STEP05_TARGET_BLADES'));
+if ~isempty(target_blades_env)
+    blade_tokens = regexp(target_blades_env, '[,;\s]+', 'split');
+    parsed_blades = [];
+    for iBladeToken = 1:numel(blade_tokens)
+        if isempty(blade_tokens{iBladeToken})
+            continue;
+        end
+        blade_value = str2double(blade_tokens{iBladeToken});
+        if isfinite(blade_value)
+            parsed_blades(end+1) = round(blade_value); %#ok<AGROW>
+        end
+    end
+    if ~isempty(parsed_blades)
+        S.target_blades = unique(parsed_blades, 'stable');
+    end
+end
+
 %% Step05 identification settings
 S.freq_search_hz = [100 1000];
 S.eo_pad = 2;
-S.top_k_eo = 3;
+
+S.eo_candidate_policy = 'adaptive_full_fit';
+S.vp_top_k_min = 3;
+S.vp_top_k_max = 7;
+S.vp_gap_ratio_keep = 0.05;
+S.include_neighbor_eo = true;
+S.neighbor_eo_radius = 1;
+S.vp_include_sensor_eta = false;
+S.vp_seed_observation_mode = 'gradient_displacement';
+S.vp_gradient_min_ratio = 0.10;
+S.vp_gradient_reference_quantile = 95;
+S.vp_gradient_weight_power = 2;
+
+S.full_eo_scan_diagnostic_enable = false;
+S.full_scan_first_window = true;
+S.full_scan_on_eo_jump = true;
+S.full_scan_on_low_gap = true;
+S.full_scan_on_eta_model_disagree = true;
+S.full_scan_every_n_windows = inf;
+S.eo_low_gap_ratio_threshold = 0.03;
+S.joint_missing_window_penalty = 0.50;
+S.joint_min_window_fraction = 0.50;
 
 S.amplitude_limit_mm = 0.50;
 S.dx_c_limit_mm = 0.35;
 S.sensor_eta_limit_mm = 0.20;
 S.sensor_eta_reg_weight_v_per_mm = 0.02;
 
+S.eta_model_policy = 'single';
+S.active_eta_model = 'fixed_joint_static_eta';
+S.eta_models = {S.active_eta_model};
+S.eta_reference_sensor = S.analysis_sensors(1);
+S.eta_accept_rmse_improvement_ratio = 0.03;
+S.eta_accept_rmse_improvement_v = 0.003;
+S.eta_boundary_fraction = 0.90;
+S.static_case_eta_diagnostic_enable = false;
+S.fit_sensor_eta = false;
+S.sensor_eta_mode = 'fixed_static';
+S.static_eta_source = 'joint_dynamic_residual_eta_preview';
+S.static_eta_file = '';
+S.sensor_eta_prior_mm = zeros(1, numel(S.analysis_sensors));
+
 S.dynamic_window_mode = 'peak_centered_fixed';
 S.pulse_window_sec = 6e-4;
 S.pulse_pad_fraction = 0.30;
 S.pulse_min_pad_points = 50;
 
-S.core_mask_mode = 'query_safe_full_wave';
+S.core_mask_mode = 'per_pass_main_pulse_query_safe';
 S.domain_margin_mm = 0.02;
 
-S.query_guard_mode = 'adaptive';
+S.query_guard_mode = 'step05_adaptive_from_x_domain';
+S.query_guard_diagnostic_enable = true;
 S.query_guard_mm = [];
 S.query_guard_min_mm = 0.12;
 S.query_guard_max_mm = S.amplitude_limit_mm + S.dx_c_limit_mm + S.sensor_eta_limit_mm + 0.10;
@@ -103,13 +169,65 @@ S.dynamic_time_gradient_min_ratio = 0.15;
 S.dynamic_peak_quantile = 85;
 
 S.min_fit_points = 80;
-S.min_valid_pass_count = 2;
+S.min_valid_pass_fraction = 0.50;
+S.min_valid_pass_count = ceil(S.min_valid_pass_fraction * ...
+    S.window_laps * numel(S.analysis_sensors));
+S.min_valid_sensor_count = min(2, numel(S.analysis_sensors));
+S.min_valid_lap_count = min(2, S.window_laps);
 S.weight_floor = 0.05;
 
 S.fminsearch_max_iter = 800;
 S.fminsearch_max_fun = 2000;
 S.overshoot_penalty_weight = 100;
+S.objective_mode = 'rmse';
 S.store_bundle_preview_points = 6000;
+
+store_bundle_preview_points_env = strtrim(getenv('STEP05_STORE_BUNDLE_PREVIEW_POINTS'));
+if ~isempty(store_bundle_preview_points_env)
+    if any(strcmpi(store_bundle_preview_points_env, {'inf', 'infinite', 'all'}))
+        S.store_bundle_preview_points = inf;
+    else
+        parsed_preview_points = str2double(store_bundle_preview_points_env);
+        if isfinite(parsed_preview_points) && parsed_preview_points > 0
+            S.store_bundle_preview_points = parsed_preview_points;
+        else
+            error('STEP05_STORE_BUNDLE_PREVIEW_POINTS must be positive, inf, infinite, or all.');
+        end
+    end
+end
+
+S.raw_file_cache_enable = true;
+S.raw_file_cache_max_files = 12;
+S.raw_file_cache_max_bytes = 2.0e9;
+
+method_preset_env = strtrim(getenv('STEP05_METHOD_PRESET'));
+if ~isempty(method_preset_env)
+    error(['STEP05_METHOD_PRESET belongs to the archived legacy Step05. ' ...
+        'Use S.eo_candidate_policy and S.eta_model_policy in the new foundation Step05.']);
+end
+
+eta_model_env = strtrim(getenv('STEP05_ETA_MODEL'));
+if ~isempty(eta_model_env)
+    error(['STEP05_ETA_MODEL is no longer part of the formal Step05 route. ' ...
+        'Use Step05_Compare_EtaModels_AdaptiveEO_20250527.m or Compare_Step05_StaticEta_20250527.m for comparisons.']);
+end
+
+static_eta_file_env = strtrim(getenv('STEP05_STATIC_ETA_FILE'));
+if ~isempty(static_eta_file_env)
+    S.static_eta_file = static_eta_file_env;
+end
+
+full_scan_diag_env = strtrim(getenv('STEP05_FULL_EO_SCAN_DIAGNOSTIC_ENABLE'));
+if ~isempty(full_scan_diag_env)
+    S.full_eo_scan_diagnostic_enable = any(strcmpi( ...
+        full_scan_diag_env, {'1', 'true', 'yes', 'on'}));
+end
+
+raw_file_cache_env = strtrim(getenv('STEP05_RAW_FILE_CACHE_ENABLE'));
+if ~isempty(raw_file_cache_env)
+    S.raw_file_cache_enable = any(strcmpi( ...
+        raw_file_cache_env, {'1', 'true', 'yes', 'on'}));
+end
 
 if ischar(S.target_cases) || isstring(S.target_cases)
     S.target_cases = cellstr(S.target_cases);
@@ -122,7 +240,10 @@ fprintf('Target cases: %s\n', strjoin(cellstr(target_cases), ', '));
 fprintf('Target blades: %s\n', mat2str(S.target_blades));
 fprintf('Analysis sensors: %s\n', mat2str(S.analysis_sensors));
 fprintf('Model: V = T_{s,b}(x - dx_c - eta_s - A*sin(EO*theta + phi)).\n');
-fprintf('Eta gauge: eta of reference sensor CH%d is fixed to zero.\n', S.analysis_sensors(1));
+fprintf('Eta policy: %s, active model=%s, reference CH%d.\n', ...
+    S.eta_model_policy, S.active_eta_model, S.eta_reference_sensor);
+fprintf('EO candidate policy: %s (VP all EO, adaptive full-fit set).\n', ...
+    S.eo_candidate_policy);
 fprintf('Core mask mode: %s\n', S.core_mask_mode);
 fprintf('Phase-safe expansion: %d\n', S.phase_safe_expansion);
 
@@ -143,6 +264,23 @@ if ~isempty(template_override_file)
     fprintf('Step05 template override: %s\n', template_override_file);
 end
 
+if isfield(S, 'active_eta_model') && ...
+        strcmpi(S.active_eta_model, 'fixed_joint_static_eta')
+    [S.sensor_eta_prior_mm, S.static_eta_prior_info] = ...
+        load_joint_static_eta_prior_local(cfg, S);
+    fprintf('Static eta source: %s\n', S.static_eta_source);
+    fprintf('Static eta prior (sensors %s, relative to CH%d): %s mm\n', ...
+        mat2str(S.analysis_sensors), S.reference_sensor_id, ...
+        mat2str(S.sensor_eta_prior_mm, 8));
+else
+    S.static_eta_prior_info = table(S.analysis_sensors(:), ...
+        zeros(numel(S.analysis_sensors), 1), ...
+        nan(numel(S.analysis_sensors), 1), ...
+        strings(numel(S.analysis_sensors), 1), ...
+        'VariableNames', {'sensor_id', 'eta_prior_mm', ...
+        'eta_plan_iqr_mm', 'joint_static_eta_file'});
+end
+
 ResultSet = struct();
 ResultSet.Dataset = cfg.dataset;
 ResultSet.CreatedBy = mfilename;
@@ -158,6 +296,67 @@ for iCase = 1:numel(target_cases)
 
     ResultSet.Cases(iCase).case_name = case_name;
     ResultSet.Cases(iCase).BladeResult = case_result;
+end
+
+
+function [eta, info] = load_joint_static_eta_prior_local(cfg, S)
+sensors = S.analysis_sensors(:).';
+blade_id = S.target_blades(1);
+sensor_tag = ['S', sprintf('%d', sensors)];
+
+eta_file = '';
+if isfield(S, 'static_eta_file') && ~isempty(S.static_eta_file)
+    eta_file = char(S.static_eta_file);
+end
+if isempty(eta_file)
+    eta_file = fullfile(cfg.output_root, 'step05_joint_static_eta_preview', ...
+        sprintf('JointStaticEtaPreview_B%d_%s.mat', blade_id, sensor_tag));
+end
+if ~isfile(eta_file)
+    error(['Formal Step05 now requires dynamic residual static eta. ' ...
+        'Run Calibrate_Step05_JointStaticEta_FromPreview_20250527 first, ' ...
+        'or set STEP05_STATIC_ETA_FILE. Missing file: %s'], eta_file);
+end
+
+loaded = load(eta_file, 'Summary');
+if ~isfield(loaded, 'Summary')
+    error('Joint static eta file must contain Summary: %s', eta_file);
+end
+Summary = loaded.Summary;
+
+if isfield(Summary, 'TargetBlade') && double(Summary.TargetBlade) ~= blade_id
+    error('Joint static eta target blade mismatch: file B%d, requested B%d.', ...
+        double(Summary.TargetBlade), blade_id);
+end
+if isfield(Summary, 'SensorIDs') && ...
+        ~isequal(double(Summary.SensorIDs(:).'), sensors)
+    error('Joint static eta sensor mismatch: file %s, requested %s.', ...
+        mat2str(double(Summary.SensorIDs(:).')), mat2str(sensors));
+end
+if ~isfield(Summary, 'Consensus') || ...
+        ~isfield(Summary.Consensus, 'eta_median_mm')
+    error('Joint static eta file missing Summary.Consensus.eta_median_mm: %s', ...
+        eta_file);
+end
+
+eta = double(Summary.Consensus.eta_median_mm(:).');
+if numel(eta) ~= numel(sensors) || any(~isfinite(eta))
+    error('Invalid joint static eta vector in %s.', eta_file);
+end
+eta(1) = 0;
+
+plan_iqr = nan(size(eta));
+if isfield(Summary.Consensus, 'eta_plan_iqr_mm')
+    plan_iqr = double(Summary.Consensus.eta_plan_iqr_mm(:).');
+end
+if numel(plan_iqr) ~= numel(eta)
+    plan_iqr = nan(size(eta));
+end
+
+info = table(sensors(:), eta(:), plan_iqr(:), ...
+    repmat(string(eta_file), numel(sensors), 1), ...
+    'VariableNames', {'sensor_id', 'eta_prior_mm', ...
+    'eta_plan_iqr_mm', 'joint_static_eta_file'});
 end
 
 
@@ -229,9 +428,13 @@ if ~isfolder(case_dir)
 end
 
 opr_times = load_dynamic_opr_times_local(step02_case_dir);
+[opr_events_per_revolution, opr_events_source] = resolve_step05_opr_events_per_revolution_local( ...
+    cfg, Template, step02_metadata);
 
 [F_omega_deg_s, speed_diag] = build_dynamic_speed_interpolant_local( ...
-    opr_times, cfg.blades_num);
+    opr_times, opr_events_per_revolution);
+speed_diag.opr_events_per_revolution = opr_events_per_revolution;
+speed_diag.opr_events_per_revolution_source = opr_events_source;
 
 blade_results = repmat(struct('blade_id', NaN, 'Result', []), ...
     numel(S.target_blades), 1);
@@ -278,7 +481,8 @@ for ib = 1:numel(S.target_blades)
     Result = run_single_blade_step05_local( ...
         case_name, case_dir, case_data, step02_metadata, ...
         opr_times, F_omega_deg_s, speed_diag, ...
-        Template, passes_by_sensor, WindowPlan, cfg, S, blade_id);
+        Template, passes_by_sensor, WindowPlan, cfg, S, blade_id, ...
+        opr_events_per_revolution);
 
     out_dir = fullfile(S.output_dir, case_name);
     fig_case_dir = fullfile(S.figure_dir, case_name);
@@ -320,7 +524,8 @@ end
 function Result = run_single_blade_step05_local( ...
     case_name, case_dir, case_data, step02_metadata, ...
     opr_times, F_omega_deg_s, speed_diag, ...
-    Template, passes_by_sensor, WindowPlan, cfg, S, blade_id)
+    Template, passes_by_sensor, WindowPlan, cfg, S, blade_id, ...
+    opr_events_per_revolution)
 
 method = build_step05_method_metadata_local(S);
 
@@ -328,6 +533,7 @@ trend_rows = repmat(make_empty_trend_row_local(), height(WindowPlan), 1);
 WindowResult = repmat(make_empty_window_result_local(), height(WindowPlan), 1);
 
 best = struct('weighted_voltage_rmse', inf);
+prev_ok_eo = NaN;
 
 for iw = 1:height(WindowPlan)
     W = WindowPlan(iw, :);
@@ -340,7 +546,8 @@ for iw = 1:height(WindowPlan)
     % ---------------------------------------------------------------------
     bundle_all = build_direct_bundle_for_window_local( ...
         case_dir, case_data, opr_times, F_omega_deg_s, ...
-        Template, passes_by_sensor, cfg, S, blade_id, W);
+        Template, passes_by_sensor, cfg, S, blade_id, W, ...
+        opr_events_per_revolution);
 
     bundle_all = attach_template_mini_records_local( ...
         bundle_all, Template, S.analysis_sensors, blade_id);
@@ -368,6 +575,8 @@ for iw = 1:height(WindowPlan)
     % This is the conservative region smaller than Step04 x_domain.
     % ---------------------------------------------------------------------
     core_bundle = select_bundle_points_local(bundle_all, bundle_all.core_mask, S);
+    core_coverage = build_bundle_coverage_local(core_bundle, S);
+    core_bundle.Coverage = core_coverage;
 
     if core_bundle.point_count < S.min_fit_points
         warning('Window %d has too few query-safe core points (%d).', ...
@@ -375,83 +584,56 @@ for iw = 1:height(WindowPlan)
 
         [trend_rows(iw), WindowResult(iw)] = make_failed_window_result_local( ...
             W, iw, bundle_all, 'too_few_query_safe_core_points');
+        trend_rows(iw) = attach_coverage_to_trend_row_local( ...
+            trend_rows(iw), core_coverage);
+        WindowResult(iw).CoreCoverage = core_coverage;
+        WindowResult(iw).CoreBundlePreview = ...
+            downsample_bundle_for_storage_local(core_bundle, ...
+            S.store_bundle_preview_points);
         continue;
     end
 
-    if core_bundle.valid_pass_count < S.min_valid_pass_count
-        warning('Window %d has too few valid core passes (%d).', ...
-            iw, core_bundle.valid_pass_count);
+    if ~core_coverage.ok
+        warning(['Window %d has insufficient valid core waveform coverage: %s ' ...
+            '(sensor-pass %d/%d, sensor %d/%d, lap %d/%d).'], ...
+            iw, core_coverage.failure_reason, ...
+            core_coverage.valid_pass_count, core_coverage.min_valid_pass_count, ...
+            core_coverage.valid_sensor_count, core_coverage.min_valid_sensor_count, ...
+            core_coverage.valid_lap_count, core_coverage.min_valid_lap_count);
 
         [trend_rows(iw), WindowResult(iw)] = make_failed_window_result_local( ...
-            W, iw, bundle_all, 'too_few_valid_core_passes');
+            W, iw, bundle_all, core_coverage.failure_reason);
+        trend_rows(iw) = attach_coverage_to_trend_row_local( ...
+            trend_rows(iw), core_coverage);
+        WindowResult(iw).CoreCoverage = core_coverage;
+        WindowResult(iw).CoreBundlePreview = ...
+            downsample_bundle_for_storage_local(core_bundle, ...
+            S.store_bundle_preview_points);
         continue;
     end
 
     seed_table_core = solve_vp_seed_eo_scan_local(core_bundle, eo_candidates, S);
-    final_eos_core = select_top_eos_local(seed_table_core, S.top_k_eo);
+    [final_eos_core, eo_selection_core] = ...
+        select_eo_candidates_adaptive_local(seed_table_core, S);
 
-    fit_core = refine_direct_template_fit_local( ...
-        core_bundle, seed_table_core, final_eos_core, S);
-
-    fit_core.fit_stage = 'core_query_safe';
-    fit_core.core_point_count = core_bundle.point_count;
-    fit_core.expanded_point_count = core_bundle.point_count;
+    full_scan_diag_core = make_empty_full_scan_diagnostic_local( ...
+        'core_query_safe');
 
     % ---------------------------------------------------------------------
-    % Second pass: deterministic phase-safe expansion.
-    % Expanded points are selected by fitted x_query, not by fallback.
+    % Formal active-model fit.
+    % Eta-model comparison is performed by the separate comparison script.
     % ---------------------------------------------------------------------
-    expanded_bundle = [];
-    seed_table_expanded = [];
-    fit_expanded = [];
+    [final_bundle, result, final_seed_table, fit_core, fit_expanded, ...
+        expand_info, model_results] = run_active_eta_model_window_local( ...
+        bundle_all, core_bundle, seed_table_core, final_eos_core, ...
+        eo_candidates, S, iw);
 
-    expand_info = struct();
-    expand_info.applied = false;
-    expand_info.reason = 'disabled_or_not_applicable';
-    expand_info.core_point_count = core_bundle.point_count;
-    expand_info.expanded_point_count = NaN;
-    expand_info.chosen_pass = 'core_query_safe';
-
-    if S.phase_safe_expansion && strcmpi(fit_core.status, 'ok')
-        phase_ref = fit_core;
-
-        expanded_mask = build_phase_safe_expansion_mask_local( ...
-            bundle_all, phase_ref, S);
-
-        expanded_bundle = select_bundle_points_local(bundle_all, expanded_mask, S);
-
-        expand_info.applied = true;
-        expand_info.expanded_point_count = expanded_bundle.point_count;
-        expand_info.reason = 'phase_safe_from_core_current';
-
-        if expanded_bundle.point_count >= S.min_fit_points && ...
-                expanded_bundle.valid_pass_count >= S.min_valid_pass_count
-
-            seed_table_expanded = solve_vp_seed_eo_scan_local( ...
-                expanded_bundle, eo_candidates, S);
-
-            final_eos_expanded = select_top_eos_local( ...
-                seed_table_expanded, S.top_k_eo);
-
-            fit_expanded = refine_direct_template_fit_local( ...
-                expanded_bundle, seed_table_expanded, final_eos_expanded, S);
-
-            fit_expanded.fit_stage = 'phase_safe_expanded';
-            fit_expanded.core_point_count = core_bundle.point_count;
-            fit_expanded.expanded_point_count = expanded_bundle.point_count;
-        else
-            expand_info.reason = 'phase_safe_too_few_points';
-        end
-    end
-
-    % ---------------------------------------------------------------------
-    % Explicit pass choice.
-    % No hidden fallback. Chosen pass is recorded.
-    % ---------------------------------------------------------------------
-    [final_bundle, result, final_seed_table, expand_info] = choose_step05_pass_local( ...
-        core_bundle, fit_core, seed_table_core, ...
-        expanded_bundle, fit_expanded, seed_table_expanded, ...
-        expand_info, S);
+    result.EOSelectionInfo = eo_selection_core;
+    result.FullScanDiagnosticCore = full_scan_diag_core;
+    full_scan_diag_final = run_full_eo_scan_diagnostic_posthoc_local( ...
+        final_bundle, final_seed_table, eo_candidates, S, iw, ...
+        result, prev_ok_eo);
+    result.FullScanDiagnosticFinal = full_scan_diag_final;
 
     result.window_id = iw;
     result.lap_range = [W.lap_start, W.lap_end];
@@ -470,6 +652,11 @@ for iw = 1:height(WindowPlan)
     WindowResult(iw).CoreResult = fit_core;
     WindowResult(iw).ExpandedResult = fit_expanded;
     WindowResult(iw).ExpansionInfo = expand_info;
+    WindowResult(iw).EtaModelResults = model_results;
+    WindowResult(iw).EOSelectionInfo = eo_selection_core;
+    WindowResult(iw).FullScanDiagnosticCore = full_scan_diag_core;
+    WindowResult(iw).FullScanDiagnosticFinal = full_scan_diag_final;
+    WindowResult(iw).CoreCoverage = core_coverage;
 
     WindowResult(iw).BundlePreview = ...
         downsample_bundle_for_storage_local(final_bundle, ...
@@ -479,9 +666,10 @@ for iw = 1:height(WindowPlan)
         downsample_bundle_for_storage_local(core_bundle, ...
         S.store_bundle_preview_points);
 
-    if ~isempty(expanded_bundle)
+    if isstruct(expand_info) && isfield(expand_info, 'chosen_pass') && ...
+            strcmpi(expand_info.chosen_pass, 'phase_safe_expanded')
         WindowResult(iw).ExpandedBundlePreview = ...
-            downsample_bundle_for_storage_local(expanded_bundle, ...
+            downsample_bundle_for_storage_local(final_bundle, ...
             S.store_bundle_preview_points);
     end
 
@@ -498,6 +686,10 @@ for iw = 1:height(WindowPlan)
         best.time_window_s = [W.time_start_s, W.time_end_s];
     end
 
+    if strcmpi(result.status, 'ok') && isfinite(result.EO_id)
+        prev_ok_eo = result.EO_id;
+    end
+
     fprintf(['Window %02d/%02d laps [%d %d]: chosen=%s, EO=%d, f=%.3f Hz, ' ...
         'A=%.4f mm, dx=%.4f mm, RMSE=%.5f V, points core=%d, final=%d, candidate=%d\n'], ...
         iw, height(WindowPlan), W.lap_start, W.lap_end, result.fit_stage, ...
@@ -506,7 +698,7 @@ for iw = 1:height(WindowPlan)
         final_bundle.point_count, bundle_all.point_count);
 end
 
-Trend = struct2table(trend_rows);
+Trend = struct2table(trend_rows, 'AsArray', true);
 
 Result = struct();
 Result.Dataset = cfg.dataset;
@@ -526,7 +718,10 @@ Result.WindowPlan = WindowPlan;
 Result.Trend = Trend;
 Result.WindowResult = WindowResult;
 Result.BestWindow = best;
-Result.ResonanceSummary = build_resonance_summary_local(Trend);
+Result.StaticCaseEtaSummary = build_static_case_eta_summary_local(WindowResult, S);
+Result.JointEOSummary = build_joint_eo_summary_local(WindowResult, S);
+Result.ResonanceSummary = build_resonance_summary_local( ...
+    Trend, Result.JointEOSummary);
 end
 
 
@@ -542,21 +737,37 @@ end
 
 function method = build_step05_method_metadata_local(S)
 method = struct();
-method.name = 'Step05_single_sync_direct_template_OPRCenterStd_querysafe_twostage_fullraw';
-method.version = 'QUERYSAFE_TWOSTAGE_V4_FULLRAW_20260702';
+method.name = S.method_name;
+method.version = S.version;
 method.outer_workflow = 'Step5_SingleSync style sliding-window single-synchronous identification';
 method.solver = 'OPRCenterStd low-speed non-parametric direct-template waveform inversion';
 method.forward_model = 'V = T_{s,b}(x - dx_c - eta_s - A*sin(EO*theta + phi))';
-method.vp_seed_model = 'V - T(x) = -Tprime(x) * [dx_c + a*sin(EO*theta) + b*cos(EO*theta) + eta_s]';
-method.eo_selection = sprintf('top-%d VP candidates then full waveform RMSE', S.top_k_eo);
-method.eta_gauge = sprintf('eta_s fixed to zero for CH%d', S.analysis_sensors(1));
-method.no_template_center_subtraction = true;
+method.vp_seed_model = 'VP excludes eta_s; full fit uses fixed dynamic-residual eta_s prior';
+method.eo_selection = sprintf(['VP scans all physical EO; adaptive full-fit set ' ...
+    'uses top-%d minimum, gap<=%.3g, neighbors=%d, cap=%d'], ...
+    S.vp_top_k_min, S.vp_gap_ratio_keep, S.include_neighbor_eo, S.vp_top_k_max);
+method.eta_model_policy = S.eta_model_policy;
+method.eta_models = S.eta_models;
+method.static_eta_source = getfield_default_local(S, 'static_eta_source', '');
+method.sensor_eta_prior_mm = getfield_default_local(S, 'sensor_eta_prior_mm', []);
+method.eta_gauge = sprintf('eta_s fixed to zero for reference CH%d; other CH use dynamic residual static eta prior', ...
+    S.eta_reference_sensor);
+method.x_coordinate_policy = ...
+    'Step05 maps high-speed x_abs into the coordinate frame declared by each Step04 SensorBlade template.';
+method.default_x_coordinate_frame = 'OPRCenterStd_abs';
+method.template_center_subtraction = ...
+    'template-dependent; see SensorBlade.x_coordinate_frame and bundle.x_center';
+method.no_template_center_subtraction = ...
+    'true only when SensorBlade.x_coordinate_frame is OPRCenterStd_abs';
 method.no_sensor_affine_voltage_projection = true;
 method.no_within_pulse_uniform_downsampling = true;
 method.core_mask_mode = S.core_mask_mode;
+method.query_guard_mode = S.query_guard_mode;
+method.core_point_policy = ...
+    'finite & per-pass main_pulse & inside_domain & inside_step05_query_safe_domain_0';
 method.phase_safe_expansion = S.phase_safe_expansion;
 method.two_stage_region_policy = ['full raw candidate waveform -> query-safe core region -> ' ...
-    'optional phase-safe expanded region'];
+    'model-specific phase-safe expanded region; main-pulse points only'];
 end
 
 
@@ -575,13 +786,101 @@ end
 end
 
 
-function [F_omega_deg_s, diagnostic] = build_dynamic_speed_interpolant_local(opr_times, blades_num)
+function [n, source] = resolve_step05_opr_events_per_revolution_local( ...
+    cfg, Template, step02_metadata)
+candidates = [];
+sources = strings(0, 1);
+
+[candidates, sources] = append_positive_scalar_candidate_local( ...
+    candidates, sources, cfg, 'step05_opr_events_per_revolution', ...
+    "cfg.step05_opr_events_per_revolution");
+[candidates, sources] = append_positive_scalar_candidate_local( ...
+    candidates, sources, Template, 'OPR_Events_Per_Revolution', ...
+    "Template.OPR_Events_Per_Revolution");
+
+if isfield(Template, 'Metadata') && isstruct(Template.Metadata)
+    [candidates, sources] = append_positive_scalar_candidate_local( ...
+        candidates, sources, Template.Metadata, 'opr_events_per_revolution', ...
+        "Template.Metadata.opr_events_per_revolution");
+    [candidates, sources] = append_positive_scalar_candidate_local( ...
+        candidates, sources, Template.Metadata, 'OPR_Events_Per_Revolution', ...
+        "Template.Metadata.OPR_Events_Per_Revolution");
+end
+
+if isstruct(step02_metadata)
+    [candidates, sources] = append_positive_scalar_candidate_local( ...
+        candidates, sources, step02_metadata, 'opr_events_per_revolution', ...
+        "Step02.metadata.opr_events_per_revolution");
+    [candidates, sources] = append_positive_scalar_candidate_local( ...
+        candidates, sources, step02_metadata, 'OPR_Events_Per_Revolution', ...
+        "Step02.metadata.OPR_Events_Per_Revolution");
+end
+
+if isempty(candidates)
+    [candidates, sources] = append_positive_scalar_candidate_local( ...
+        candidates, sources, cfg, 'opr_events_per_revolution', ...
+        "cfg.opr_events_per_revolution");
+end
+
+if isempty(candidates)
+    [candidates, sources] = append_positive_scalar_candidate_local( ...
+        candidates, sources, cfg, 'blades_num', ...
+        "cfg.blades_num_fallback");
+end
+
+if isempty(candidates)
+    error('Step05 cannot resolve OPR events per revolution from cfg, Step04 template, or Step02 metadata.');
+end
+
+n = round(candidates(1));
+source = char(sources(1));
+
+if ~isfinite(n) || n < 1 || abs(candidates(1) - n) > 1e-9
+    error('Invalid OPR events per revolution from %s: %.12g.', ...
+        source, candidates(1));
+end
+
+if numel(unique(round(candidates))) > 1
+    warning('Step05:OPREventsPerRevConflict', ...
+        'Conflicting OPR events/rev candidates: %s. Using %s=%d.', ...
+        mat2str(candidates(:).'), source, n);
+end
+end
+
+
+function [candidates, sources] = append_positive_scalar_candidate_local( ...
+    candidates, sources, obj, field_name, source_name)
+if ~isstruct(obj) || ~isfield(obj, field_name)
+    return;
+end
+
+value = obj.(field_name);
+
+if ischar(value) || isstring(value)
+    value = str2double(string(value));
+end
+
+if isnumeric(value) && isscalar(value) && isfinite(value) && value > 0
+    candidates(end + 1, 1) = double(value); %#ok<AGROW>
+    sources(end + 1, 1) = string(source_name); %#ok<AGROW>
+end
+end
+
+
+function [F_omega_deg_s, diagnostic] = build_dynamic_speed_interpolant_local( ...
+    opr_times, opr_events_per_revolution)
 opr_times = opr_times(:);
 
-rev_period = opr_times((blades_num + 1):end) - ...
-             opr_times(1:(end - blades_num));
+if numel(opr_times) <= opr_events_per_revolution
+    error('Not enough OPR events (%d) for events/rev=%d.', ...
+        numel(opr_times), opr_events_per_revolution);
+end
 
-speed_time = opr_times(1:(end - blades_num));
+idx0 = 1:(numel(opr_times) - opr_events_per_revolution);
+idx1 = idx0 + opr_events_per_revolution;
+
+rev_period = opr_times(idx1) - opr_times(idx0);
+speed_time = 0.5 * (opr_times(idx0) + opr_times(idx1));
 speed_deg_s = 360 ./ max(rev_period, eps);
 
 valid = isfinite(speed_time) & isfinite(speed_deg_s) & speed_deg_s > 0;
@@ -672,7 +971,8 @@ end
 
 function bundle = build_direct_bundle_for_window_local( ...
     case_dir, case_data, opr_times, F_omega_deg_s, ...
-    Template, passes_by_sensor, cfg, S, blade_id, W)
+    Template, passes_by_sensor, cfg, S, blade_id, W, ...
+    opr_events_per_revolution)
 
 bundle = make_empty_bundle_local();
 
@@ -738,11 +1038,14 @@ for sid = S.analysis_sensors
         [x_mm, theta_rad, prev_opr_idx, keep] = ...
             map_dynamic_times_to_oprcenterstd_local( ...
             t_seg, opr_times, F_omega_deg_s, ...
-            theta_std_deg, cfg, p.arrival_s);
+            theta_std_deg, cfg, p.arrival_s, ...
+            opr_events_per_revolution);
 
         t_seg = t_seg(keep);
         v_seg = v_seg(keep);
-        x_mm = x_mm(keep);
+        x_abs_mm = x_mm(keep);
+        [x_mm, x_center_mm, x_coordinate_frame] = ...
+            map_x_to_template_frame_local(x_abs_mm, tpl);
         theta_rad = theta_rad(keep);
         prev_opr_idx = prev_opr_idx(keep);
 
@@ -786,14 +1089,26 @@ for sid = S.analysis_sensors
         %    the first/core pass must use a smaller region than x_domain.
         % -------------------------------------------------------------
         base_for_guard = finite_mask & inside_domain;
+        if strcmpi(S.core_mask_mode, 'per_pass_main_pulse_query_safe')
+            base_for_guard = base_for_guard & main_pulse_mask;
+        end
 
-        query_guard = compute_query_guard_local( ...
+        [query_safe_domain, query_guard, query_safe_source] = ...
+            resolve_query_safe_domain_local( ...
             x_mm, v_seg, tpl, S, base_for_guard);
 
-        inside_guard = x_mm >= tpl.x_domain(1) + query_guard & ...
-                       x_mm <= tpl.x_domain(2) - query_guard;
+        inside_guard = x_mm >= query_safe_domain(1) & ...
+                       x_mm <= query_safe_domain(2);
 
         switch lower(strtrim(S.core_mask_mode))
+            case 'per_pass_main_pulse_query_safe'
+                % Formal route: use the complete main pulse of every pass,
+                % but exclude pulse-background points from full RMSE.
+                core_mask = finite_mask & ...
+                            inside_domain & ...
+                            main_pulse_mask & ...
+                            inside_guard;
+
             case 'legacy_base_query_safe'
                 % Historical base mask from the original direct-template
                 % route, plus query-safe shrink.
@@ -804,16 +1119,22 @@ for sid = S.analysis_sensors
 
                 core_mask = base_mask & inside_guard;
 
-            otherwise
-                % Main deterministic route for the paper:
-                % complete mapped high-speed waveform inside the query-safe
-                % shrunken trusted domain.
+            case 'query_safe_full_wave'
+                % Diagnostic route: complete mapped high-speed waveform
+                % inside the query-safe shrunken trusted domain.
                 core_mask = finite_mask & inside_domain & inside_guard;
+
+            otherwise
+                error('Unsupported S.core_mask_mode: %s', S.core_mask_mode);
         end
 
         n = numel(x_mm);
 
         bundle.x = [bundle.x; x_mm(:)]; %#ok<AGROW>
+        bundle.x_abs = [bundle.x_abs; x_abs_mm(:)]; %#ok<AGROW>
+        bundle.x_center = [bundle.x_center; repmat(x_center_mm, n, 1)]; %#ok<AGROW>
+        bundle.x_coordinate_frame = [bundle.x_coordinate_frame; ...
+            repmat(string(x_coordinate_frame), n, 1)]; %#ok<AGROW>
         bundle.v = [bundle.v; v_seg(:)]; %#ok<AGROW>
         bundle.t = [bundle.t; t_seg(:)]; %#ok<AGROW>
         bundle.theta = [bundle.theta; theta_rad(:)]; %#ok<AGROW>
@@ -834,6 +1155,12 @@ for sid = S.analysis_sensors
         bundle.finite_mask = [bundle.finite_mask; finite_mask(:)]; %#ok<AGROW>
         bundle.core_mask = [bundle.core_mask; core_mask(:)]; %#ok<AGROW>
         bundle.query_guard_mm = [bundle.query_guard_mm; repmat(query_guard, n, 1)]; %#ok<AGROW>
+        bundle.query_safe_domain_left = [bundle.query_safe_domain_left; ...
+            repmat(query_safe_domain(1), n, 1)]; %#ok<AGROW>
+        bundle.query_safe_domain_right = [bundle.query_safe_domain_right; ...
+            repmat(query_safe_domain(2), n, 1)]; %#ok<AGROW>
+        bundle.query_safe_source = [bundle.query_safe_source; ...
+            repmat(string(query_safe_source), n, 1)]; %#ok<AGROW>
 
         valid_pass_count = valid_pass_count + any(core_mask);
 
@@ -864,6 +1191,9 @@ bundle.lap_range = [NaN NaN];
 bundle.time_window_s = [NaN NaN];
 
 bundle.x = [];
+bundle.x_abs = [];
+bundle.x_center = [];
+bundle.x_coordinate_frame = strings(0, 1);
 bundle.v = [];
 bundle.t = [];
 bundle.theta = [];
@@ -884,10 +1214,17 @@ bundle.main_pulse_mask = [];
 bundle.finite_mask = [];
 bundle.core_mask = [];
 bundle.query_guard_mm = [];
+bundle.query_safe_domain_left = [];
+bundle.query_safe_domain_right = [];
+bundle.query_safe_source = strings(0, 1);
 
 bundle.point_count = 0;
 bundle.core_point_count = 0;
 bundle.valid_pass_count = 0;
+bundle.valid_sensor_count = 0;
+bundle.valid_lap_count = 0;
+bundle.expected_valid_pass_count = NaN;
+bundle.valid_pass_fraction = NaN;
 bundle.rot_freq_mean_hz = NaN;
 bundle.rot_rpm_mean = NaN;
 end
@@ -911,11 +1248,11 @@ else
 end
 
 [t_seg, v_seg] = read_raw_time_window_local( ...
-    case_dir, case_data, sid, t0, t1, cfg);
+    case_dir, case_data, sid, t0, t1, cfg, S);
 end
 
 
-function [t, v] = read_raw_time_window_local(case_dir, case_data, sid, t0, t1, cfg)
+function [t, v] = read_raw_time_window_local(case_dir, case_data, sid, t0, t1, cfg, S)
 t = [];
 v = [];
 
@@ -944,7 +1281,7 @@ for iFile = 1:numel(case_data.file_ids)
         continue;
     end
 
-    raw = load_raw_mat_file_local(file);
+    raw = load_raw_mat_file_local(file, S);
 
     if isempty(raw)
         continue;
@@ -971,7 +1308,79 @@ end
 end
 
 
-function raw = load_raw_mat_file_local(file)
+function raw = load_raw_mat_file_local(file, S)
+if nargin < 2 || ~getfield_default_local(S, 'raw_file_cache_enable', false)
+    raw = load_raw_mat_file_uncached_local(file);
+    return;
+end
+
+persistent RawCache RawCacheOrder RawCacheBytes
+
+if isempty(RawCache)
+    RawCache = containers.Map('KeyType', 'char', 'ValueType', 'any');
+    RawCacheOrder = {};
+    RawCacheBytes = 0;
+end
+
+file_info = dir(file);
+
+if isempty(file_info)
+    raw = [];
+    return;
+end
+
+key = char(file);
+
+if isKey(RawCache, key)
+    entry = RawCache(key);
+
+    if isequal(entry.file_bytes, file_info.bytes) && ...
+            isequal(entry.file_datenum, file_info.datenum)
+        raw = entry.raw;
+        RawCacheOrder = move_cache_key_to_end_local(RawCacheOrder, key);
+        return;
+    end
+
+    RawCacheBytes = max(0, RawCacheBytes - entry.cache_bytes);
+    remove(RawCache, key);
+    RawCacheOrder = remove_cache_key_local(RawCacheOrder, key);
+end
+
+raw = load_raw_mat_file_uncached_local(file);
+
+if isempty(raw)
+    return;
+end
+
+raw_info = whos('raw');
+entry = struct();
+entry.raw = raw;
+entry.file_bytes = file_info.bytes;
+entry.file_datenum = file_info.datenum;
+entry.cache_bytes = raw_info.bytes;
+
+RawCache(key) = entry;
+RawCacheOrder = [RawCacheOrder, {key}]; %#ok<AGROW>
+RawCacheBytes = RawCacheBytes + entry.cache_bytes;
+
+max_files = getfield_default_local(S, 'raw_file_cache_max_files', 12);
+max_bytes = getfield_default_local(S, 'raw_file_cache_max_bytes', 2.0e9);
+
+while (~isempty(RawCacheOrder) && ...
+        (numel(RawCacheOrder) > max_files || RawCacheBytes > max_bytes))
+    evict_key = RawCacheOrder{1};
+    RawCacheOrder(1) = [];
+
+    if isKey(RawCache, evict_key)
+        evict_entry = RawCache(evict_key);
+        RawCacheBytes = max(0, RawCacheBytes - evict_entry.cache_bytes);
+        remove(RawCache, evict_key);
+    end
+end
+end
+
+
+function raw = load_raw_mat_file_uncached_local(file)
 loaded = load(file);
 fn = fieldnames(loaded);
 
@@ -991,8 +1400,24 @@ raw(raw(:,1) == 0, :) = [];
 end
 
 
+function order = move_cache_key_to_end_local(order, key)
+order = remove_cache_key_local(order, key);
+order = [order, {key}];
+end
+
+
+function order = remove_cache_key_local(order, key)
+if isempty(order)
+    return;
+end
+
+order(strcmp(order, key)) = [];
+end
+
+
 function [x_mm, theta_rad, prev_opr_idx, keep] = map_dynamic_times_to_oprcenterstd_local( ...
-    t, opr_times, F_omega_deg_s, theta_std_deg, cfg, t_peak)
+    t, opr_times, F_omega_deg_s, theta_std_deg, cfg, t_peak, ...
+    opr_events_per_revolution)
 
 % Match the original OPRCenterStd DynamicMap route:
 % every sample in one pulse segment uses the OPR center immediately before
@@ -1025,11 +1450,67 @@ theta_rel_deg = wrap_to_180_local(theta_actual_deg - theta_std_deg);
 x_mm = theta_rel_deg .* (pi / 180) .* cfg.r_tip_mm;
 
 theta_rad = map_time_to_rotor_phase_local( ...
-    opr_times, t, cfg.blades_num);
+    opr_times, t, opr_events_per_revolution);
 
 prev_opr_idx(:) = idx_ref;
 
 keep = isfinite(x_mm) & isfinite(theta_rad);
+end
+
+
+function [x_model_mm, x_center_mm, x_coordinate_frame] = ...
+    map_x_to_template_frame_local(x_abs_mm, tpl)
+x_abs_mm = x_abs_mm(:);
+
+x_coordinate_frame = "OPRCenterStd_abs";
+
+if isfield(tpl, 'x_coordinate_frame') && ~isempty(tpl.x_coordinate_frame)
+    x_coordinate_frame = string(tpl.x_coordinate_frame);
+end
+
+x_coordinate_frame = strtrim(x_coordinate_frame);
+
+if strlength(x_coordinate_frame) == 0
+    x_coordinate_frame = "OPRCenterStd_abs";
+end
+
+x_center_mm = resolve_template_x_center_local(tpl, 0);
+
+switch lower(char(x_coordinate_frame))
+    case {'oprcenterstd_abs', 'oprcenterstd_absolute', 'absolute', 'abs'}
+        x_model_mm = x_abs_mm;
+
+    case {'oprcenterstd_centered', 'centered', 'xc_centered', 'x_minus_xc'}
+        x_center_mm = resolve_template_x_center_local(tpl, NaN);
+
+        if ~isfinite(x_center_mm)
+            error(['Step04 template declares centered x-coordinate frame ' ...
+                'but does not provide finite xc/xc_abs.']);
+        end
+
+        x_model_mm = x_abs_mm - x_center_mm;
+
+    otherwise
+        error('Unsupported Step04 template x_coordinate_frame: %s', ...
+            char(x_coordinate_frame));
+end
+end
+
+
+function x_center_mm = resolve_template_x_center_local(tpl, default_value)
+x_center_mm = default_value;
+
+field_candidates = {'xc_abs', 'x_center_abs', 'xc', 'x_center'};
+
+for i = 1:numel(field_candidates)
+    f = field_candidates{i};
+
+    if isfield(tpl, f) && isnumeric(tpl.(f)) && isscalar(tpl.(f)) && ...
+            isfinite(tpl.(f))
+        x_center_mm = double(tpl.(f));
+        return;
+    end
+end
 end
 
 
@@ -1052,15 +1533,16 @@ theta_points_deg = theta_base + theta_rel;
 end
 
 
-function theta_rot = map_time_to_rotor_phase_local(opr_times, sample_times, num_blades)
+function theta_rot = map_time_to_rotor_phase_local( ...
+    opr_times, sample_times, opr_events_per_revolution)
 sample_times = sample_times(:);
 theta_rot = nan(size(sample_times));
 
-if numel(opr_times) <= num_blades
+if numel(opr_times) <= opr_events_per_revolution
     return;
 end
 
-rev_anchor_times = opr_times(1:num_blades:end);
+rev_anchor_times = opr_times(1:opr_events_per_revolution:end);
 rev_anchor_times = rev_anchor_times(:);
 
 rev_phase = 2*pi*(0:numel(rev_anchor_times)-1).';
@@ -1252,6 +1734,53 @@ cc = [starts, ends];
 end
 
 
+function [query_safe_domain, qg, source] = resolve_query_safe_domain_local( ...
+    x, v, tpl, S, base_mask)
+mode = lower(strtrim(string(S.query_guard_mode)));
+source = "step05_guard_from_step04_x_domain";
+
+if any(mode == ["template_override", "step04_override", ...
+        "step04", "step04_query_safe"]) && ...
+        isfield(tpl, 'x_query_safe_domain') && ...
+        isnumeric(tpl.x_query_safe_domain) && ...
+        numel(tpl.x_query_safe_domain) >= 2 && ...
+        all(isfinite(tpl.x_query_safe_domain(1:2))) && ...
+        tpl.x_query_safe_domain(2) > tpl.x_query_safe_domain(1)
+
+    query_safe_domain = double(tpl.x_query_safe_domain(1:2));
+    query_safe_domain(1) = max(query_safe_domain(1), tpl.x_domain(1));
+    query_safe_domain(2) = min(query_safe_domain(2), tpl.x_domain(2));
+
+    if query_safe_domain(2) <= query_safe_domain(1)
+        error('Step04 x_query_safe_domain is outside x_domain.');
+    end
+
+    qg = min([ ...
+        query_safe_domain(1) - tpl.x_domain(1), ...
+        tpl.x_domain(2) - query_safe_domain(2)]);
+    qg = max(qg, 0);
+    source = "template_x_query_safe_domain_override";
+    return;
+end
+
+qg = compute_query_guard_local(x, v, tpl, S, base_mask);
+query_safe_domain = [tpl.x_domain(1) + qg, tpl.x_domain(2) - qg];
+
+if query_safe_domain(2) <= query_safe_domain(1)
+    error('Step05 query-safe domain from x_domain collapsed: [%.6g %.6g].', ...
+        query_safe_domain(1), query_safe_domain(2));
+end
+
+if any(mode == ["fixed", "step05_fixed_from_x_domain"])
+    source = "step05_fixed_guard_from_step04_x_domain";
+elseif any(mode == ["adaptive", "step05_adaptive_from_x_domain", ...
+        "step05_guard_from_x_domain", "template_override", ...
+        "step04_override", "step04", "step04_query_safe"])
+    source = "step05_adaptive_guard_from_step04_x_domain";
+end
+end
+
+
 function qg = compute_query_guard_local(x, v, tpl, S, base_mask)
 % Resolve query guard for the first/core pass.
 %
@@ -1265,7 +1794,9 @@ if nargin < 5 || isempty(base_mask)
     base_mask = isfinite(x) & isfinite(v);
 end
 
-if strcmpi(S.query_guard_mode, 'fixed')
+mode = lower(strtrim(string(S.query_guard_mode)));
+
+if any(mode == ["fixed", "step05_fixed_from_x_domain"])
     if isempty(S.query_guard_mm)
         qg = S.amplitude_limit_mm + ...
              S.dx_c_limit_mm + ...
@@ -1274,7 +1805,9 @@ if strcmpi(S.query_guard_mode, 'fixed')
     else
         qg = S.query_guard_mm;
     end
-else
+elseif any(mode == ["adaptive", "step05_adaptive_from_x_domain", ...
+        "step05_guard_from_x_domain", "template_override", ...
+        "step04_override", "step04", "step04_query_safe"])
     qg = S.query_guard_min_mm;
 
     if nnz(base_mask) >= 8
@@ -1292,6 +1825,8 @@ else
             qg = prctile(u_app, q) + S.query_guard_safety_mm;
         end
     end
+else
+    error('Unsupported S.query_guard_mode: %s', S.query_guard_mode);
 end
 
 if isempty(qg) || ~isfinite(qg)
@@ -1364,6 +1899,9 @@ sub = bundle;
 
 fields = { ...
     'x', ...
+    'x_abs', ...
+    'x_center', ...
+    'x_coordinate_frame', ...
     'v', ...
     't', ...
     'theta', ...
@@ -1381,7 +1919,10 @@ fields = { ...
     'main_pulse_mask', ...
     'finite_mask', ...
     'core_mask', ...
-    'query_guard_mm'};
+    'query_guard_mm', ...
+    'query_safe_domain_left', ...
+    'query_safe_domain_right', ...
+    'query_safe_source'};
 
 for i = 1:numel(fields)
     f = fields{i};
@@ -1393,17 +1934,82 @@ end
 
 sub.point_count = nnz(mask);
 sub.core_point_count = nnz(mask);
-sub.valid_pass_count = numel(unique(sub.pass_id));
+sub.Coverage = build_bundle_coverage_local(sub, S);
+sub.valid_pass_count = sub.Coverage.valid_pass_count;
+sub.valid_sensor_count = sub.Coverage.valid_sensor_count;
+sub.valid_lap_count = sub.Coverage.valid_lap_count;
+sub.expected_valid_pass_count = sub.Coverage.expected_valid_pass_count;
+sub.valid_pass_fraction = sub.Coverage.valid_pass_fraction;
 
 sub.fit_weight = sub.template_weight(:);
 sub.fit_weight(~isfinite(sub.fit_weight)) = S.weight_floor;
 sub.fit_weight = max(sub.fit_weight, S.weight_floor);
 end
+
+
+function Coverage = build_bundle_coverage_local(bundle, S)
+Coverage = struct();
+Coverage.expected_valid_pass_count = S.window_laps * numel(S.analysis_sensors);
+Coverage.min_valid_pass_count = resolve_min_valid_pass_count_local(S);
+Coverage.min_valid_sensor_count = getfield_default_local( ...
+    S, 'min_valid_sensor_count', min(2, numel(S.analysis_sensors)));
+Coverage.min_valid_lap_count = getfield_default_local( ...
+    S, 'min_valid_lap_count', min(2, S.window_laps));
+
+Coverage.valid_pass_count = count_unique_numeric_field_local(bundle, 'pass_id');
+Coverage.valid_sensor_count = count_unique_numeric_field_local(bundle, 'sensor_id');
+Coverage.valid_lap_count = count_unique_numeric_field_local(bundle, 'analysis_lap');
+Coverage.valid_pass_fraction = Coverage.valid_pass_count / ...
+    max(Coverage.expected_valid_pass_count, 1);
+
+Coverage.ok = true;
+Coverage.failure_reason = '';
+
+if Coverage.valid_pass_count < Coverage.min_valid_pass_count
+    Coverage.ok = false;
+    Coverage.failure_reason = 'too_few_valid_core_sensor_passes';
+elseif Coverage.valid_sensor_count < Coverage.min_valid_sensor_count
+    Coverage.ok = false;
+    Coverage.failure_reason = 'too_few_valid_core_sensors';
+elseif Coverage.valid_lap_count < Coverage.min_valid_lap_count
+    Coverage.ok = false;
+    Coverage.failure_reason = 'too_few_valid_core_laps';
+end
+end
+
+
+function n = resolve_min_valid_pass_count_local(S)
+if isfield(S, 'min_valid_pass_count') && ~isempty(S.min_valid_pass_count) && ...
+        isfinite(S.min_valid_pass_count)
+    n = S.min_valid_pass_count;
+else
+    expected = S.window_laps * numel(S.analysis_sensors);
+    frac = getfield_default_local(S, 'min_valid_pass_fraction', 0.5);
+    n = ceil(frac * expected);
+end
+
+n = max(1, round(n));
+end
+
+
+function n = count_unique_numeric_field_local(S, field_name)
+n = 0;
+
+if ~isstruct(S) || ~isfield(S, field_name) || isempty(S.(field_name))
+    return;
+end
+
+value = S.(field_name);
+value = value(isfinite(value));
+n = numel(unique(value));
+end
+
+
 function seed_table = solve_vp_seed_eo_scan_local(bundle, eo_candidates, S)
 % First-order VP seed scan using non-parametric template gradient.
 %
 % Approximation:
-%   V - T(x) ~= -T'(x) * [dx_c + eta_s + a*sin(EO*theta) + b*cos(EO*theta)]
+%   V - T(x) ~= -T'(x) * [dx_c + a*sin(EO*theta) + b*cos(EO*theta)]
 %
 % The solved sinusoid coefficients are:
 %   y = a*sin(EO*theta) + b*cos(EO*theta)
@@ -1438,12 +2044,28 @@ Tp = bundle.template_dv_dx(:);
 w = bundle.fit_weight(:);
 sensor_id = bundle.sensor_id(:);
 
+grad_abs = abs(Tp);
+grad_ref = prctile(grad_abs(isfinite(grad_abs)), S.vp_gradient_reference_quantile);
+if ~isfinite(grad_ref) || grad_ref <= 0
+    grad_ref = max(grad_abs(isfinite(grad_abs)), [], 'omitnan');
+end
+if ~isfinite(grad_ref) || grad_ref <= 0
+    return;
+end
+
+static_eta = resolve_sensor_eta_prior_local(S);
+eta_vec0 = zeros(size(sensor_id));
+for is = 1:n_sensors
+    eta_vec0(sensor_id == sensors(is)) = static_eta(is);
+end
+
 valid = isfinite(v) & ...
         isfinite(theta) & ...
         isfinite(T0) & ...
         isfinite(Tp) & ...
         isfinite(w) & ...
-        abs(Tp) > eps;
+        isfinite(eta_vec0) & ...
+        grad_abs >= max(S.vp_gradient_min_ratio * grad_ref, eps);
 
 if nnz(valid) < S.min_fit_points
     return;
@@ -1455,13 +2077,15 @@ T0 = T0(valid);
 Tp = Tp(valid);
 w = w(valid);
 sensor_id = sensor_id(valid);
+eta_vec0 = eta_vec0(valid);
 
 % Linearized displacement-like residual.
 % V - T0 = -Tp * q  ->  q = -(V - T0) / Tp
-q_obs = -(v - T0) ./ Tp;
+q_obs = -(v - T0) ./ Tp - eta_vec0;
 
 % Weight should also account for template gradient reliability.
-wq = w .* min(abs(Tp) ./ max(abs(Tp), [], 'omitnan'), 1);
+wq = w .* min(abs(Tp) ./ max(grad_ref, eps), 1) .^ ...
+    max(0, S.vp_gradient_weight_power);
 wq(~isfinite(wq)) = S.weight_floor;
 wq = max(wq, S.weight_floor);
 
@@ -1475,11 +2099,13 @@ for iEO = 1:numel(eo_candidates)
     %   common dx_c
     %   sin coefficient a
     %   cos coefficient b
-    %   eta for sensors 2..end, sensor 1 is gauge-fixed to zero
+    % Sensor eta is intentionally excluded from the formal VP route.
     X = [ones(size(q_obs)), s, c];
 
-    for is = 2:n_sensors
-        X = [X, double(sensor_id == sensors(is))]; %#ok<AGROW>
+    if isfield(S, 'vp_include_sensor_eta') && S.vp_include_sensor_eta
+        for is = 2:n_sensors
+            X = [X, double(sensor_id == sensors(is))]; %#ok<AGROW>
+        end
     end
 
     good = all(isfinite(X), 2) & isfinite(q_obs) & isfinite(wq);
@@ -1510,7 +2136,8 @@ for iEO = 1:numel(eo_candidates)
     b = beta(3);
 
     eta = zeros(1, n_sensors);
-    if n_sensors > 1 && numel(beta) >= 3 + n_sensors - 1
+    if isfield(S, 'vp_include_sensor_eta') && S.vp_include_sensor_eta && ...
+            n_sensors > 1 && numel(beta) >= 3 + n_sensors - 1
         eta(2:end) = beta(4:end).';
     end
     eta(1) = 0;
@@ -1554,10 +2181,617 @@ eos_valid = eos(valid);
 
 [~, order] = sort(scores_valid, 'ascend');
 
-order = order(1:min(top_k, numel(order)));
+if isfinite(top_k)
+    order = order(1:min(top_k, numel(order)));
+end
 
 final_eos = eos_valid(order);
 final_eos = unique(final_eos, 'stable');
+end
+
+
+function [eo_selected, info] = select_eo_candidates_adaptive_local(seed_table, S)
+scores = [seed_table.rank_score];
+eos = [seed_table.EO];
+
+valid = isfinite(scores) & isfinite(eos);
+
+if ~any(valid)
+    eo_selected = [];
+    info = table();
+    return;
+end
+
+scores_valid = scores(valid);
+eos_valid = eos(valid);
+
+[scores_sorted, order] = sort(scores_valid, 'ascend');
+eos_sorted = eos_valid(order);
+
+best = scores_sorted(1);
+gap_ratio = (scores_sorted - best) ./ max(abs(best), eps);
+
+top_min = max(1, round(getfield_default_local(S, 'vp_top_k_min', 3)));
+top_max = max(top_min, round(getfield_default_local(S, 'vp_top_k_max', 7)));
+gap_thr = getfield_default_local(S, 'vp_gap_ratio_keep', 0.05);
+
+keep = false(size(eos_sorted));
+keep(1:min(top_min, numel(keep))) = true;
+keep = keep | gap_ratio <= gap_thr;
+
+eo_keep = eos_sorted(keep);
+
+if getfield_default_local(S, 'include_neighbor_eo', false)
+    radius = max(0, round(getfield_default_local(S, 'neighbor_eo_radius', 1)));
+    eo_expand = [];
+    for i = 1:numel(eo_keep)
+        eo_expand = [eo_expand, (eo_keep(i)-radius):(eo_keep(i)+radius)]; %#ok<AGROW>
+    end
+    eo_keep = unique(eo_expand, 'stable');
+end
+
+eo_keep = eo_keep(ismember(eo_keep, eos_sorted));
+
+[~, loc] = ismember(eo_keep, eos_sorted);
+loc = loc(loc > 0);
+loc = unique(loc, 'stable');
+loc = sort(loc, 'ascend');
+loc = loc(1:min(numel(loc), top_max));
+
+eo_selected = eos_sorted(loc);
+eo_selected = unique(eo_selected, 'stable');
+
+rows = repmat(struct( ...
+    'EO', NaN, ...
+    'rank_score', NaN, ...
+    'weighted_voltage_rmse', NaN, ...
+    'vp_rank', NaN, ...
+    'vp_gap_ratio', NaN, ...
+    'selected_for_full_fit', false), numel(eos_sorted), 1);
+
+for i = 1:numel(eos_sorted)
+    rows(i).EO = eos_sorted(i);
+    rows(i).rank_score = scores_sorted(i);
+    rows(i).weighted_voltage_rmse = scores_sorted(i);
+    rows(i).vp_rank = i;
+    rows(i).vp_gap_ratio = gap_ratio(i);
+    rows(i).selected_for_full_fit = ismember(eos_sorted(i), eo_selected);
+end
+
+info = struct2table(rows);
+end
+
+
+function [final_bundle, result, final_seed_table, fit_core, fit_expanded, ...
+    expand_info, model_results] = run_eta_model_comparison_window_local( ...
+    bundle_all, core_bundle, seed_table_core, final_eos_core, ...
+    eo_candidates, S, window_id)
+
+eta_models = resolve_eta_models_local(S);
+
+model_template = struct( ...
+    'eta_model', '', ...
+    'CoreResult', [], ...
+    'ExpandedResult', [], ...
+    'ExpansionInfo', [], ...
+    'Result', [], ...
+    'EOSelectionExpanded', [], ...
+    'SeedTableChosen', [], ...
+    'BundleSummary', []);
+
+model_results = repmat(model_template, numel(eta_models), 1);
+model_bundles = cell(numel(eta_models), 1);
+model_seed_tables = cell(numel(eta_models), 1);
+
+for im = 1:numel(eta_models)
+    eta_model = char(eta_models{im});
+    S_model = configure_eta_model_local(S, eta_model);
+
+    fit_core_now = refine_direct_template_fit_local( ...
+        core_bundle, seed_table_core, final_eos_core, S_model);
+
+    fit_core_now.fit_stage = 'core_query_safe';
+    fit_core_now.eta_model = eta_model;
+    fit_core_now.core_point_count = core_bundle.point_count;
+    fit_core_now.expanded_point_count = core_bundle.point_count;
+
+    expanded_bundle = [];
+    seed_table_expanded = [];
+    fit_expanded_now = [];
+    eo_selection_expanded = table();
+
+    expand_info_now = make_expansion_info_local(core_bundle.point_count);
+
+    if S.phase_safe_expansion && strcmpi(fit_core_now.status, 'ok')
+        expanded_mask = build_phase_safe_expansion_mask_local( ...
+            bundle_all, fit_core_now, S_model);
+
+        expanded_bundle = select_bundle_points_local(bundle_all, expanded_mask, S_model);
+        expanded_coverage = build_bundle_coverage_local(expanded_bundle, S_model);
+        expanded_bundle.Coverage = expanded_coverage;
+
+        expand_info_now.applied = true;
+        expand_info_now.expanded_point_count = expanded_bundle.point_count;
+        expand_info_now.reason = ['phase_safe_from_core_', eta_model];
+        expand_info_now.Coverage = expanded_coverage;
+
+        if expanded_bundle.point_count >= S.min_fit_points && expanded_coverage.ok
+
+            seed_table_expanded = solve_vp_seed_eo_scan_local( ...
+                expanded_bundle, eo_candidates, S_model);
+
+            [final_eos_expanded, eo_selection_expanded] = ...
+                select_eo_candidates_adaptive_local(seed_table_expanded, S_model);
+
+            fit_expanded_now = refine_direct_template_fit_local( ...
+                expanded_bundle, seed_table_expanded, final_eos_expanded, S_model);
+
+            fit_expanded_now.fit_stage = 'phase_safe_expanded';
+            fit_expanded_now.eta_model = eta_model;
+            fit_expanded_now.core_point_count = core_bundle.point_count;
+            fit_expanded_now.expanded_point_count = expanded_bundle.point_count;
+        else
+            expand_info_now.reason = 'phase_safe_too_few_points';
+        end
+    end
+
+    [chosen_bundle, chosen_result, chosen_seed_table, expand_info_now] = ...
+        choose_step05_pass_local( ...
+        core_bundle, fit_core_now, seed_table_core, ...
+        expanded_bundle, fit_expanded_now, seed_table_expanded, ...
+        expand_info_now, S_model);
+
+    chosen_result.eta_model = eta_model;
+    chosen_result.EtaModel = eta_model;
+
+    model_results(im).eta_model = eta_model;
+    model_results(im).CoreResult = strip_heavy_result_fields_local(fit_core_now);
+    model_results(im).ExpandedResult = strip_heavy_result_fields_local(fit_expanded_now);
+    model_results(im).ExpansionInfo = expand_info_now;
+    model_results(im).Result = strip_heavy_result_fields_local(chosen_result);
+    model_results(im).EOSelectionExpanded = eo_selection_expanded;
+    model_results(im).SeedTableChosen = chosen_seed_table;
+    model_results(im).BundleSummary = summarize_bundle_local(chosen_bundle, bundle_all);
+
+    model_bundles{im} = chosen_bundle;
+    model_seed_tables{im} = chosen_seed_table;
+end
+
+[preferred_idx, comparison] = choose_preferred_eta_model_local(model_results, S);
+
+final_bundle = model_bundles{preferred_idx};
+result = model_results(preferred_idx).Result;
+final_seed_table = model_seed_tables{preferred_idx};
+fit_core = model_results(preferred_idx).CoreResult;
+fit_expanded = model_results(preferred_idx).ExpandedResult;
+expand_info = model_results(preferred_idx).ExpansionInfo;
+
+result.EtaModelComparison = comparison;
+result.EtaModelResultsSummary = summarize_eta_model_results_local(model_results);
+result.ModelDecisionSummary = build_model_decision_summary_local( ...
+    result, comparison, S, window_id);
+result.decision_status = result.ModelDecisionSummary.status;
+result.preferred_eta_model = result.eta_model;
+end
+
+
+function [final_bundle, result, final_seed_table, fit_core, fit_expanded, ...
+    expand_info, model_results] = run_active_eta_model_window_local( ...
+    bundle_all, core_bundle, seed_table_core, final_eos_core, ...
+    eo_candidates, S, window_id)
+
+S_single = S;
+S_single.eta_model_policy = 'single';
+S_single.eta_models = {S.active_eta_model};
+
+[final_bundle, result, final_seed_table, fit_core, fit_expanded, ...
+    expand_info, model_results] = run_eta_model_comparison_window_local( ...
+    bundle_all, core_bundle, seed_table_core, final_eos_core, ...
+    eo_candidates, S_single, window_id);
+
+result.EtaModelComparison = table();
+result.EtaModelResultsSummary = table();
+result.ModelDecisionSummary = build_active_model_decision_summary_local( ...
+    result, S, window_id);
+result.decision_status = result.ModelDecisionSummary.status;
+result.preferred_eta_model = result.eta_model;
+end
+
+
+function decision = build_active_model_decision_summary_local(result, S, window_id)
+decision = struct();
+decision.window_id = window_id;
+decision.active_eta_model = string(getfield_default_local( ...
+    S, 'active_eta_model', ''));
+decision.preferred_eo = getfield_default_local(result, 'EO_id', NaN);
+decision.status = "ok";
+decision.rejection_reason = "";
+decision.full_scan_diagnostic_enable = getfield_default_local( ...
+    S, 'full_eo_scan_diagnostic_enable', false);
+
+if ~strcmpi(getfield_default_local(result, 'status', ''), 'ok')
+    decision.status = "rejected";
+    decision.rejection_reason = string(getfield_default_local( ...
+        result, 'failure_reason', 'fit_failed'));
+end
+end
+
+
+function eta_models = resolve_eta_models_local(S)
+eta_models = {'none'};
+
+if isfield(S, 'eta_models') && ~isempty(S.eta_models)
+    eta_models = S.eta_models;
+end
+
+if ischar(eta_models) || isstring(eta_models)
+    eta_models = cellstr(eta_models);
+end
+
+eta_models = cellfun(@char, eta_models, 'UniformOutput', false);
+eta_models = unique(eta_models, 'stable');
+end
+
+
+function S_model = configure_eta_model_local(S, eta_model)
+S_model = S;
+S_model.active_eta_model = eta_model;
+
+switch lower(strtrim(eta_model))
+    case {'none', 'noeta', 'eta_none'}
+        S_model.fit_sensor_eta = false;
+        S_model.sensor_eta_limit_mm = 0;
+        S_model.sensor_eta_reg_weight_v_per_mm = 0;
+
+    case {'fixed_joint_static_eta', 'fixed_static_eta'}
+        S_model.fit_sensor_eta = false;
+        S_model.sensor_eta_mode = 'fixed_static';
+
+    case {'window_bounded', 'bounded', 'witheta'}
+        S_model.fit_sensor_eta = true;
+
+    otherwise
+        error('Unsupported Step05 eta model: %s', eta_model);
+end
+
+S_model.vp_include_sensor_eta = false;
+end
+
+
+function expand_info = make_expansion_info_local(core_point_count)
+expand_info = struct();
+expand_info.applied = false;
+expand_info.reason = 'disabled_or_not_applicable';
+expand_info.core_point_count = core_point_count;
+expand_info.expanded_point_count = NaN;
+expand_info.chosen_pass = 'core_query_safe';
+expand_info.Coverage = [];
+end
+
+
+function [preferred_idx, comparison] = choose_preferred_eta_model_local(model_results, S)
+n = numel(model_results);
+rows = repmat(struct( ...
+    'eta_model', "", ...
+    'status', "", ...
+    'EO_id', NaN, ...
+    'weighted_voltage_rmse', NaN, ...
+    'plain_voltage_rmse', NaN, ...
+    'sensor_eta_max_abs_mm', NaN, ...
+    'eta_at_bound_flag', false, ...
+    'preferred', false, ...
+    'decision_note', ""), n, 1);
+
+for i = 1:n
+    r = model_results(i).Result;
+    rows(i).eta_model = string(model_results(i).eta_model);
+    if isstruct(r)
+        rows(i).status = string(getfield_default_local(r, 'status', ''));
+        rows(i).EO_id = getfield_default_local(r, 'EO_id', NaN);
+        rows(i).weighted_voltage_rmse = getfield_default_local( ...
+            r, 'weighted_voltage_rmse', NaN);
+        rows(i).plain_voltage_rmse = getfield_default_local( ...
+            r, 'plain_voltage_rmse', NaN);
+        rows(i).sensor_eta_max_abs_mm = getfield_default_local( ...
+            r, 'sensor_eta_max_abs_mm', NaN);
+    end
+
+    eta_limit = max(abs(getfield_default_local(S, 'sensor_eta_limit_mm', NaN)), eps);
+    boundary_fraction = getfield_default_local(S, 'eta_boundary_fraction', 0.90);
+    rows(i).eta_at_bound_flag = isfinite(rows(i).sensor_eta_max_abs_mm) && ...
+        rows(i).sensor_eta_max_abs_mm >= boundary_fraction * eta_limit;
+end
+
+preferred_idx = find(strcmpi({model_results.eta_model}, 'none'), 1, 'first');
+if isempty(preferred_idx)
+    preferred_idx = 1;
+end
+
+idx_none = find(strcmpi({model_results.eta_model}, 'none'), 1, 'first');
+idx_window = find(strcmpi({model_results.eta_model}, 'window_bounded'), 1, 'first');
+
+if ~isempty(idx_none) && ~isempty(idx_window)
+    rn = rows(idx_none);
+    rw = rows(idx_window);
+    no_ok = strcmpi(rn.status, "ok") && isfinite(rn.weighted_voltage_rmse);
+    win_ok = strcmpi(rw.status, "ok") && isfinite(rw.weighted_voltage_rmse);
+
+    if ~no_ok && win_ok
+        preferred_idx = idx_window;
+        rows(idx_window).decision_note = "NoEta failed; bounded eta selected.";
+    elseif no_ok && win_ok
+        improvement = rn.weighted_voltage_rmse - rw.weighted_voltage_rmse;
+        improvement_ratio = improvement / max(abs(rn.weighted_voltage_rmse), eps);
+        same_eo = isequaln(rn.EO_id, rw.EO_id);
+        eta_clean = ~rw.eta_at_bound_flag;
+
+        if same_eo && eta_clean && ...
+                improvement >= getfield_default_local(S, 'eta_accept_rmse_improvement_v', 0) && ...
+                improvement_ratio >= getfield_default_local(S, 'eta_accept_rmse_improvement_ratio', 0.03)
+
+            preferred_idx = idx_window;
+            rows(idx_window).decision_note = "Bounded eta accepted: same EO, stable eta, meaningful RMSE improvement.";
+        elseif ~same_eo
+            preferred_idx = idx_none;
+            rows(idx_none).decision_note = "Eta models disagree on EO; NoEta kept as conservative primary.";
+            rows(idx_window).decision_note = "Diagnostic only: eta model changes EO.";
+        elseif rw.eta_at_bound_flag
+            preferred_idx = idx_none;
+            rows(idx_none).decision_note = "Bounded eta at limit; NoEta kept.";
+            rows(idx_window).decision_note = "Diagnostic only: eta at bound.";
+        else
+            preferred_idx = idx_none;
+            rows(idx_none).decision_note = "Bounded eta improvement below acceptance threshold.";
+        end
+    end
+end
+
+rows(preferred_idx).preferred = true;
+comparison = struct2table(rows);
+end
+
+
+function summary = summarize_eta_model_results_local(model_results)
+summary = repmat(struct( ...
+    'eta_model', "", ...
+    'status', "", ...
+    'fit_stage', "", ...
+    'EO_id', NaN, ...
+    'A_id', NaN, ...
+    'fn_id', NaN, ...
+    'weighted_voltage_rmse', NaN, ...
+    'sensor_eta_max_abs_mm', NaN, ...
+    'point_count', NaN), numel(model_results), 1);
+
+for i = 1:numel(model_results)
+    r = model_results(i).Result;
+    summary(i).eta_model = string(model_results(i).eta_model);
+    if isstruct(r)
+        summary(i).status = string(getfield_default_local(r, 'status', ''));
+        summary(i).fit_stage = string(getfield_default_local(r, 'fit_stage', ''));
+        summary(i).EO_id = getfield_default_local(r, 'EO_id', NaN);
+        summary(i).A_id = getfield_default_local(r, 'A_id', NaN);
+        summary(i).fn_id = getfield_default_local(r, 'fn_id', NaN);
+        summary(i).weighted_voltage_rmse = getfield_default_local( ...
+            r, 'weighted_voltage_rmse', NaN);
+        summary(i).sensor_eta_max_abs_mm = getfield_default_local( ...
+            r, 'sensor_eta_max_abs_mm', NaN);
+        summary(i).point_count = getfield_default_local(r, 'point_count', NaN);
+    end
+end
+
+summary = struct2table(summary);
+end
+
+
+function decision = build_model_decision_summary_local(result, comparison, S, window_id)
+decision = struct();
+decision.window_id = window_id;
+decision.preferred_eta_model = string(getfield_default_local(result, 'eta_model', ''));
+decision.preferred_eo = getfield_default_local(result, 'EO_id', NaN);
+decision.status = "ok";
+decision.rejection_reason = "";
+
+if istable(comparison) && any(strcmpi(comparison.eta_model, "window_bounded")) && ...
+        any(strcmpi(comparison.eta_model, "none"))
+    rn = comparison(strcmpi(comparison.eta_model, "none"), :);
+    rw = comparison(strcmpi(comparison.eta_model, "window_bounded"), :);
+    if height(rn) >= 1 && height(rw) >= 1 && ...
+            isfinite(rn.EO_id(1)) && isfinite(rw.EO_id(1)) && ...
+            rn.EO_id(1) ~= rw.EO_id(1)
+        decision.status = "ambiguous_eta_model_disagree";
+    elseif height(rw) >= 1 && rw.eta_at_bound_flag(1)
+        decision.status = "eta_diagnostic_at_bound";
+    end
+end
+
+if ~strcmpi(getfield_default_local(result, 'status', ''), 'ok')
+    decision.status = "rejected";
+    decision.rejection_reason = string(getfield_default_local( ...
+        result, 'failure_reason', 'fit_failed'));
+end
+
+decision.full_scan_diagnostic_enable = getfield_default_local( ...
+    S, 'full_eo_scan_diagnostic_enable', false);
+end
+
+
+function Diagnostic = run_full_eo_scan_diagnostic_if_needed_local( ...
+    bundle, seed_table, eo_candidates, S, window_id, fit_stage, trigger_reason)
+
+Diagnostic = make_empty_full_scan_diagnostic_local(fit_stage);
+
+if ~getfield_default_local(S, 'full_eo_scan_diagnostic_enable', false)
+    return;
+end
+
+run_now = false;
+
+if window_id == 1 && getfield_default_local(S, 'full_scan_first_window', true)
+    run_now = true;
+end
+
+n_every = getfield_default_local(S, 'full_scan_every_n_windows', inf);
+if isfinite(n_every) && n_every > 0 && mod(window_id - 1, n_every) == 0
+    run_now = true;
+end
+
+if ~run_now
+    return;
+end
+
+all_eos = unique(eo_candidates(isfinite(eo_candidates)), 'stable');
+if isempty(all_eos)
+    return;
+end
+
+S_none = configure_eta_model_local(S, 'none');
+S_eta = configure_eta_model_local(S, 'window_bounded');
+
+Diagnostic.applied = true;
+Diagnostic.trigger_reason = string(trigger_reason);
+Diagnostic.NoEta = strip_heavy_result_fields_local( ...
+    refine_direct_template_fit_local(bundle, seed_table, all_eos, S_none));
+Diagnostic.WindowEta = strip_heavy_result_fields_local( ...
+    refine_direct_template_fit_local(bundle, seed_table, all_eos, S_eta));
+end
+
+
+function Diagnostic = run_full_eo_scan_diagnostic_posthoc_local( ...
+    bundle, seed_table, eo_candidates, S, window_id, result, prev_ok_eo)
+
+Diagnostic = make_empty_full_scan_diagnostic_local( ...
+    getfield_default_local(result, 'fit_stage', 'final'));
+
+if ~getfield_default_local(S, 'full_eo_scan_diagnostic_enable', false)
+    return;
+end
+
+reasons = strings(0, 1);
+
+if window_id == 1 && getfield_default_local(S, 'full_scan_first_window', true)
+    reasons(end+1, 1) = "first_window"; %#ok<AGROW>
+end
+
+n_every = getfield_default_local(S, 'full_scan_every_n_windows', inf);
+if isfinite(n_every) && n_every > 0 && mod(window_id - 1, n_every) == 0
+    reasons(end+1, 1) = "periodic"; %#ok<AGROW>
+end
+
+if getfield_default_local(S, 'full_scan_on_eo_jump', true) && ...
+        isfinite(prev_ok_eo) && isstruct(result) && ...
+        isfield(result, 'EO_id') && isfinite(result.EO_id) && ...
+        result.EO_id ~= prev_ok_eo
+    reasons(end+1, 1) = "eo_jump"; %#ok<AGROW>
+end
+
+gap_ratio = compute_fullfit_gap_ratio_local(result);
+if getfield_default_local(S, 'full_scan_on_low_gap', true) && ...
+        isfinite(gap_ratio) && ...
+        gap_ratio < getfield_default_local(S, 'eo_low_gap_ratio_threshold', 0.03)
+    reasons(end+1, 1) = "low_fullfit_gap"; %#ok<AGROW>
+end
+
+if getfield_default_local(S, 'full_scan_on_eta_model_disagree', true) && ...
+        eta_models_disagree_on_eo_local(result)
+    reasons(end+1, 1) = "eta_model_disagree"; %#ok<AGROW>
+end
+
+reasons = unique(reasons, 'stable');
+
+if isempty(reasons)
+    return;
+end
+
+all_eos = unique(eo_candidates(isfinite(eo_candidates)), 'stable');
+if isempty(all_eos)
+    return;
+end
+
+S_none = configure_eta_model_local(S, 'none');
+S_eta = configure_eta_model_local(S, 'window_bounded');
+
+Diagnostic.applied = true;
+Diagnostic.trigger_reason = strjoin(cellstr(reasons), '|');
+Diagnostic.fullfit_gap_ratio = gap_ratio;
+Diagnostic.previous_ok_eo = prev_ok_eo;
+Diagnostic.current_eo = getfield_default_local(result, 'EO_id', NaN);
+Diagnostic.NoEta = strip_heavy_result_fields_local( ...
+    refine_direct_template_fit_local(bundle, seed_table, all_eos, S_none));
+Diagnostic.WindowEta = strip_heavy_result_fields_local( ...
+    refine_direct_template_fit_local(bundle, seed_table, all_eos, S_eta));
+end
+
+
+function Diagnostic = make_empty_full_scan_diagnostic_local(fit_stage)
+Diagnostic = struct();
+Diagnostic.applied = false;
+Diagnostic.fit_stage = string(fit_stage);
+Diagnostic.trigger_reason = "";
+Diagnostic.fullfit_gap_ratio = NaN;
+Diagnostic.previous_ok_eo = NaN;
+Diagnostic.current_eo = NaN;
+Diagnostic.NoEta = [];
+Diagnostic.WindowEta = [];
+end
+
+
+function gap_ratio = compute_fullfit_gap_ratio_local(result)
+gap_ratio = NaN;
+
+if isempty(result) || ~isstruct(result) || ...
+        ~isfield(result, 'CandidateTable') || isempty(result.CandidateTable) || ...
+        ~istable(result.CandidateTable) || height(result.CandidateTable) < 2 || ...
+        ~ismember('weighted_voltage_rmse', result.CandidateTable.Properties.VariableNames)
+    return;
+end
+
+rmse = result.CandidateTable.weighted_voltage_rmse;
+rmse = rmse(isfinite(rmse));
+
+if numel(rmse) < 2
+    return;
+end
+
+rmse = sort(rmse, 'ascend');
+gap_ratio = (rmse(2) - rmse(1)) ./ max(abs(rmse(1)), eps);
+end
+
+
+function tf = eta_models_disagree_on_eo_local(result)
+tf = false;
+
+if isempty(result) || ~isstruct(result) || ...
+        ~isfield(result, 'EtaModelComparison') || ...
+        isempty(result.EtaModelComparison) || ...
+        ~istable(result.EtaModelComparison) || ...
+        ~all(ismember({'eta_model', 'EO_id', 'status'}, ...
+        result.EtaModelComparison.Properties.VariableNames))
+    return;
+end
+
+C = result.EtaModelComparison;
+ok = strcmpi(C.status, "ok") & isfinite(C.EO_id);
+if nnz(ok) < 2
+    return;
+end
+
+tf = numel(unique(C.EO_id(ok))) > 1;
+end
+
+
+function result = strip_heavy_result_fields_local(result)
+if isempty(result) || ~isstruct(result)
+    return;
+end
+
+if isfield(result, 'ReconstructionPreview')
+    result = rmfield(result, 'ReconstructionPreview');
+end
+
+if isfield(result, 'V_pred_preview')
+    result.V_pred_preview = result.V_pred_preview(1:min(end, 40));
+end
 end
 
 
@@ -1574,6 +2808,7 @@ candidate_template = struct( ...
     'phi', NaN, ...
     'dx_c', NaN, ...
     'sensor_eta', [], ...
+    'objective_score', inf, ...
     'weighted_voltage_rmse', inf, ...
     'plain_voltage_rmse', inf, ...
     'point_count', bundle.point_count, ...
@@ -1611,7 +2846,7 @@ for i = 1:numel(final_eos)
 
     [A, phi, dx_c, eta] = unpack_params_local(p_best, S);
 
-    [wrmse, prmse] = evaluate_full_template_model_local( ...
+    [wrmse, prmse, ~, ~, objective_score] = evaluate_full_template_model_local( ...
         bundle, EO, A, phi, dx_c, eta, S);
 
     Candidate(i).EO = EO;
@@ -1619,13 +2854,14 @@ for i = 1:numel(final_eos)
     Candidate(i).phi = wrap_to_pi_local(phi);
     Candidate(i).dx_c = dx_c;
     Candidate(i).sensor_eta = eta;
+    Candidate(i).objective_score = objective_score;
     Candidate(i).weighted_voltage_rmse = wrmse;
     Candidate(i).plain_voltage_rmse = prmse;
     Candidate(i).point_count = bundle.point_count;
     Candidate(i).exitflag = exitflag;
 end
 
-[~, best_idx] = min([Candidate.weighted_voltage_rmse]);
+[~, best_idx] = min([Candidate.objective_score]);
 
 best = Candidate(best_idx);
 
@@ -1635,7 +2871,7 @@ if ~isfinite(best.weighted_voltage_rmse)
     return;
 end
 
-[wrmse, prmse, Vpred, coverage] = evaluate_full_template_model_local( ...
+[wrmse, prmse, Vpred, coverage, objective_score] = evaluate_full_template_model_local( ...
     bundle, ...
     best.EO, ...
     best.A, ...
@@ -1647,6 +2883,8 @@ end
 result = struct();
 result.status = 'ok';
 result.failure_reason = '';
+result.eta_model = getfield_default_local(S, 'active_eta_model', '');
+result.EtaModel = result.eta_model;
 result.EO_id = best.EO;
 result.A_id = best.A;
 result.phi_id_wrapped = wrap_to_pi_local(best.phi);
@@ -1658,6 +2896,7 @@ result.sensor_eta_max_abs_mm = max(abs(best.sensor_eta), [], 'omitnan');
 result.fn_id = best.EO * bundle.rot_freq_mean_hz;
 result.rot_freq_mean_hz = bundle.rot_freq_mean_hz;
 result.rot_rpm_mean = bundle.rot_rpm_mean;
+result.objective_score = objective_score;
 result.weighted_voltage_rmse = wrmse;
 result.plain_voltage_rmse = prmse;
 result.point_count = bundle.point_count;
@@ -1703,9 +2942,13 @@ if isempty(seed.sensor_eta) || numel(seed.sensor_eta) ~= numel(S.analysis_sensor
     seed.sensor_eta = zeros(1, numel(S.analysis_sensors));
 end
 
-seed.sensor_eta(1) = 0;
-seed.sensor_eta = max(min(seed.sensor_eta, S.sensor_eta_limit_mm), ...
-                      -S.sensor_eta_limit_mm);
+if isfield(S, 'sensor_eta_mode') && strcmpi(S.sensor_eta_mode, 'fixed_static')
+    seed.sensor_eta = resolve_sensor_eta_prior_local(S);
+elseif ~isfield(S, 'fit_sensor_eta') || ~S.fit_sensor_eta
+    seed.sensor_eta(:) = 0;
+end
+
+seed.sensor_eta = project_sensor_eta_local(seed.sensor_eta, S);
 end
 
 
@@ -1719,8 +2962,13 @@ end
 eta(1) = 0;
 
 % Parameter vector:
-%   [A, phi, dx_c, eta_2, eta_3, ...]
-p = [A, phi, dx_c, eta(2:end)];
+%   none/static eta: [A, phi, dx_c]
+%   window eta:      [A, phi, dx_c, eta_2, eta_3, ...]
+if isfield(S, 'fit_sensor_eta') && S.fit_sensor_eta
+    p = [A, phi, dx_c, eta(2:end)];
+else
+    p = [A, phi, dx_c];
+end
 p(~isfinite(p)) = 0;
 end
 
@@ -1734,8 +2982,10 @@ dx_c = p(3);
 
 eta = zeros(1, numel(S.analysis_sensors));
 
-if numel(p) > 3
+if isfield(S, 'fit_sensor_eta') && S.fit_sensor_eta && numel(p) > 3
     eta(2:end) = p(4:end);
+elseif isfield(S, 'sensor_eta_mode') && strcmpi(S.sensor_eta_mode, 'fixed_static')
+    eta = resolve_sensor_eta_prior_local(S);
 end
 
 % Soft projection for reported parameters.
@@ -1744,20 +2994,49 @@ A = min(max(abs(A), 0), S.amplitude_limit_mm);
 phi = wrap_to_pi_local(phi);
 dx_c = max(min(dx_c, S.dx_c_limit_mm), -S.dx_c_limit_mm);
 
+eta = project_sensor_eta_local(eta, S);
+end
+
+
+function eta = resolve_sensor_eta_prior_local(S)
+eta = zeros(1, numel(S.analysis_sensors));
+if isfield(S, 'sensor_eta_prior_mm') && ...
+        isnumeric(S.sensor_eta_prior_mm) && ...
+        numel(S.sensor_eta_prior_mm) == numel(S.analysis_sensors)
+    eta = S.sensor_eta_prior_mm(:).';
+end
+eta(~isfinite(eta)) = 0;
 eta(1) = 0;
+end
+
+
+function eta = project_sensor_eta_local(eta, S)
+eta = eta(:).';
+if numel(eta) ~= numel(S.analysis_sensors)
+    eta = zeros(1, numel(S.analysis_sensors));
+end
+eta(~isfinite(eta)) = 0;
+eta(1) = 0;
+
+if isfield(S, 'sensor_eta_mode') && strcmpi(S.sensor_eta_mode, 'fixed_static')
+    eta = resolve_sensor_eta_prior_local(S);
+    return;
+end
+
 eta = max(min(eta, S.sensor_eta_limit_mm), ...
           -S.sensor_eta_limit_mm);
+eta(1) = 0;
 end
 
 
 function value = direct_template_objective_local(p, EO, bundle, S)
 [A, phi, dx_c, eta] = unpack_params_local(p, S);
 
-[wrmse, ~, ~, coverage] = evaluate_full_template_model_local( ...
+[wrmse, ~, ~, coverage, objective_score] = evaluate_full_template_model_local( ...
     bundle, EO, A, phi, dx_c, eta, S);
 
-if ~isfinite(wrmse)
-    wrmse = 1e6;
+if ~isfinite(objective_score)
+    objective_score = 1e12;
 end
 
 penalty = 0;
@@ -1771,7 +3050,7 @@ if numel(p) >= 3
     penalty = penalty + 100 * max(0, abs(p(3)) - S.dx_c_limit_mm).^2;
 end
 
-if numel(p) > 3
+if isfield(S, 'fit_sensor_eta') && S.fit_sensor_eta && numel(p) > 3
     penalty = penalty + 100 * sum(max(0, abs(p(4:end)) - S.sensor_eta_limit_mm).^2);
 end
 
@@ -1781,11 +3060,11 @@ eta_penalty = S.sensor_eta_reg_weight_v_per_mm * ...
 overshoot_penalty = S.overshoot_penalty_weight * ...
     coverage.overshoot_rms_mm;
 
-value = wrmse + eta_penalty + overshoot_penalty + penalty;
+value = objective_score + eta_penalty + overshoot_penalty + penalty;
 end
 
 
-function [wrmse, prmse, Vpred, coverage] = evaluate_full_template_model_local( ...
+function [wrmse, prmse, Vpred, coverage, objective_score] = evaluate_full_template_model_local( ...
     bundle, EO, A, phi, dx_c, eta, S)
 
 sensors = S.analysis_sensors(:).';
@@ -1845,20 +3124,72 @@ valid = isfinite(Vpred) & ...
 if nnz(valid) < 5
     wrmse = inf;
     prmse = inf;
+    objective_score = inf;
+    corr_score = NaN;
 else
     res = bundle.v(:) - Vpred(:);
     w = bundle.fit_weight(:);
 
-    wrmse = sqrt(nansum(w(valid) .* res(valid).^2) / ...
-        max(nansum(w(valid)), eps));
+    residual_sse = nansum(w(valid) .* res(valid).^2);
+    wrmse = sqrt(residual_sse / max(nansum(w(valid)), eps));
 
     prmse = sqrt(nanmean(res(valid).^2));
+
+    rmse_objective = residual_sse / max(nansum(w(valid)), eps);
+    if isfield(S, 'objective_mode') && strcmpi(S.objective_mode, 'corr')
+        corr_score = compute_weighted_sensor_correlation_score_local( ...
+            bundle, Vpred, valid, w);
+        objective_score = max(0, 1 - corr_score);
+    else
+        corr_score = NaN;
+        objective_score = rmse_objective;
+    end
 end
 
 coverage = struct();
 coverage.clamp_fraction = mean(overshoot > 0, 'omitnan');
 coverage.overshoot_rms_mm = sqrt(nanmean(overshoot(:).^2));
 coverage.max_overshoot_mm = max(overshoot(:), [], 'omitnan');
+coverage.correlation_score = corr_score;
+coverage.objective_score = objective_score;
+end
+
+
+function score = compute_weighted_sensor_correlation_score_local(bundle, Vpred, valid, w)
+sensors = unique(bundle.sensor_id(valid));
+scores = [];
+weights = [];
+
+for i = 1:numel(sensors)
+    sid = sensors(i);
+    idx = valid & bundle.sensor_id(:) == sid;
+    if nnz(idx) < 10
+        continue;
+    end
+
+    y = bundle.v(idx);
+    yp = Vpred(idx);
+    ww = w(idx);
+    ww(~isfinite(ww)) = 0;
+    if sum(ww) <= 0
+        continue;
+    end
+
+    y0 = y - sum(ww .* y) / sum(ww);
+    yp0 = yp - sum(ww .* yp) / sum(ww);
+    denom = sqrt(sum(ww .* y0.^2) * sum(ww .* yp0.^2));
+    if denom <= eps
+        continue;
+    end
+    scores(end+1, 1) = sum(ww .* y0 .* yp0) / denom; %#ok<AGROW>
+    weights(end+1, 1) = sum(ww); %#ok<AGROW>
+end
+
+if isempty(scores)
+    score = -1;
+else
+    score = sum(weights .* scores) / sum(weights);
+end
 end
 
 
@@ -1942,6 +3273,11 @@ for sid = sensors
 end
 
 expanded_mask = expanded_mask & bundle.finite_mask(:);
+
+if isfield(bundle, 'main_pulse_mask') && ...
+        numel(bundle.main_pulse_mask) == numel(expanded_mask)
+    expanded_mask = expanded_mask & bundle.main_pulse_mask(:);
+end
 end
 
 
@@ -2038,9 +3374,18 @@ row = struct( ...
     'weighted_voltage_rmse', NaN, ...
     'plain_voltage_rmse', NaN, ...
     'valid_segment_count', NaN, ...
+    'valid_sensor_count', NaN, ...
+    'valid_lap_count', NaN, ...
+    'expected_valid_pass_count', NaN, ...
+    'min_valid_pass_count', NaN, ...
+    'min_valid_sensor_count', NaN, ...
+    'min_valid_lap_count', NaN, ...
+    'valid_pass_fraction', NaN, ...
     'point_count', NaN, ...
     'core_point_count', NaN, ...
     'expanded_point_count', NaN, ...
+    'eta_model', '', ...
+    'decision_status', '', ...
     'fit_stage', '', ...
     'status', '', ...
     'failure_reason', '');
@@ -2056,6 +3401,11 @@ Wres = struct( ...
     'CoreResult', [], ...
     'ExpandedResult', [], ...
     'ExpansionInfo', [], ...
+    'EtaModelResults', [], ...
+    'EOSelectionInfo', [], ...
+    'CoreCoverage', [], ...
+    'FullScanDiagnosticCore', [], ...
+    'FullScanDiagnosticFinal', [], ...
     'CandidateBundlePreview', [], ...
     'BundlePreview', [], ...
     'CoreBundlePreview', [], ...
@@ -2090,6 +3440,11 @@ if isstruct(bundle)
 
     if isfield(bundle, 'valid_pass_count')
         trend_row.valid_segment_count = bundle.valid_pass_count;
+    end
+
+    if isfield(bundle, 'Coverage') && isstruct(bundle.Coverage)
+        trend_row = attach_coverage_to_trend_row_local( ...
+            trend_row, bundle.Coverage);
     end
 end
 
@@ -2135,6 +3490,8 @@ result = struct();
 result.status = 'failed';
 result.failure_reason = reason;
 
+result.eta_model = '';
+result.EtaModel = '';
 result.EO_id = NaN;
 result.A_id = NaN;
 result.phi_id_wrapped = NaN;
@@ -2159,6 +3516,9 @@ result.Coverage = struct( ...
 
 result.CandidateTable = table();
 result.VPSeedTable = table();
+result.EtaModelComparison = table();
+result.EtaModelResultsSummary = table();
+result.ModelDecisionSummary = struct();
 result.BundleSummary = struct();
 result.ReconstructionPreview = [];
 end
@@ -2189,6 +3549,10 @@ if isstruct(bundle)
     if isfield(bundle, 'valid_pass_count')
         row.valid_segment_count = bundle.valid_pass_count;
     end
+
+    if isfield(bundle, 'Coverage') && isstruct(bundle.Coverage)
+        row = attach_coverage_to_trend_row_local(row, bundle.Coverage);
+    end
 end
 
 if isempty(result) || ~isstruct(result)
@@ -2197,12 +3561,20 @@ if isempty(result) || ~isstruct(result)
     return;
 end
 
-row.status = result.status;
-row.failure_reason = result.failure_reason;
+    row.status = result.status;
+    row.failure_reason = result.failure_reason;
 
-if isfield(result, 'fit_stage')
-    row.fit_stage = result.fit_stage;
-end
+    if isfield(result, 'eta_model')
+        row.eta_model = result.eta_model;
+    end
+
+    if isfield(result, 'decision_status')
+        row.decision_status = char(result.decision_status);
+    end
+
+    if isfield(result, 'fit_stage')
+        row.fit_stage = result.fit_stage;
+    end
 
 if strcmpi(result.status, 'ok')
     row.A_id = result.A_id;
@@ -2225,6 +3597,30 @@ if strcmpi(result.status, 'ok')
         row.expanded_point_count = result.expanded_point_count;
     end
 end
+end
+
+
+function row = attach_coverage_to_trend_row_local(row, Coverage)
+if isempty(Coverage) || ~isstruct(Coverage)
+    return;
+end
+
+row.valid_segment_count = getfield_default_local( ...
+    Coverage, 'valid_pass_count', row.valid_segment_count);
+row.valid_sensor_count = getfield_default_local( ...
+    Coverage, 'valid_sensor_count', row.valid_sensor_count);
+row.valid_lap_count = getfield_default_local( ...
+    Coverage, 'valid_lap_count', row.valid_lap_count);
+row.expected_valid_pass_count = getfield_default_local( ...
+    Coverage, 'expected_valid_pass_count', row.expected_valid_pass_count);
+row.min_valid_pass_count = getfield_default_local( ...
+    Coverage, 'min_valid_pass_count', row.min_valid_pass_count);
+row.min_valid_sensor_count = getfield_default_local( ...
+    Coverage, 'min_valid_sensor_count', row.min_valid_sensor_count);
+row.min_valid_lap_count = getfield_default_local( ...
+    Coverage, 'min_valid_lap_count', row.min_valid_lap_count);
+row.valid_pass_fraction = getfield_default_local( ...
+    Coverage, 'valid_pass_fraction', row.valid_pass_fraction);
 end
 
 
@@ -2279,6 +3675,34 @@ else
     summary.query_guard_mean_mm = NaN;
     summary.query_guard_max_mm = NaN;
 end
+
+if isstruct(all_bundle) && isfield(all_bundle, 'query_safe_domain_left') && ...
+        ~isempty(all_bundle.query_safe_domain_left)
+    summary.query_safe_left_mm = median(all_bundle.query_safe_domain_left, 'omitnan');
+else
+    summary.query_safe_left_mm = NaN;
+end
+
+if isstruct(all_bundle) && isfield(all_bundle, 'query_safe_domain_right') && ...
+        ~isempty(all_bundle.query_safe_domain_right)
+    summary.query_safe_right_mm = median(all_bundle.query_safe_domain_right, 'omitnan');
+else
+    summary.query_safe_right_mm = NaN;
+end
+
+if isstruct(all_bundle) && isfield(all_bundle, 'query_safe_source') && ...
+        ~isempty(all_bundle.query_safe_source)
+    summary.query_safe_source = char(join(unique(string(all_bundle.query_safe_source)), ','));
+else
+    summary.query_safe_source = '';
+end
+
+if isstruct(all_bundle) && isfield(all_bundle, 'x_coordinate_frame') && ...
+        ~isempty(all_bundle.x_coordinate_frame)
+    summary.x_coordinate_frame = char(join(unique(string(all_bundle.x_coordinate_frame)), ','));
+else
+    summary.x_coordinate_frame = '';
+end
 end
 
 
@@ -2289,6 +3713,80 @@ elseif isstruct(bundle) && isfield(bundle, 'pass_id') && ~isempty(bundle.pass_id
     n = numel(unique(bundle.pass_id));
 else
     n = NaN;
+end
+end
+
+
+function Summary = build_static_case_eta_summary_local(WindowResult, S)
+Summary = struct();
+Summary.enabled = getfield_default_local(S, 'static_case_eta_diagnostic_enable', true);
+Summary.status = 'disabled';
+Summary.sensor_ids = S.analysis_sensors;
+Summary.eta_static_median_mm = nan(1, numel(S.analysis_sensors));
+Summary.eta_static_iqr_mm = nan(1, numel(S.analysis_sensors));
+Summary.window_count = 0;
+Summary.stable_flag = false;
+Summary.note = '';
+
+if ~Summary.enabled || isempty(WindowResult)
+    return;
+end
+
+eta_rows = [];
+
+for iw = 1:numel(WindowResult)
+    if ~isfield(WindowResult(iw), 'EtaModelResults') || ...
+            isempty(WindowResult(iw).EtaModelResults)
+        continue;
+    end
+
+    model_results = WindowResult(iw).EtaModelResults;
+    idx = find(strcmpi({model_results.eta_model}, 'window_bounded'), 1, 'first');
+    if isempty(idx) || ~isfield(model_results(idx), 'Result')
+        continue;
+    end
+
+    r = model_results(idx).Result;
+    if ~isstruct(r) || ~strcmpi(getfield_default_local(r, 'status', ''), 'ok') || ...
+            ~isfield(r, 'sensor_eta_id') || isempty(r.sensor_eta_id)
+        continue;
+    end
+
+    eta = r.sensor_eta_id(:).';
+    if numel(eta) ~= numel(S.analysis_sensors)
+        continue;
+    end
+
+    eta_rows = [eta_rows; eta]; %#ok<AGROW>
+end
+
+Summary.window_count = size(eta_rows, 1);
+
+if isempty(eta_rows)
+    Summary.status = 'no_window_eta';
+    Summary.note = 'No valid window_bounded eta results were available.';
+    return;
+end
+
+Summary.eta_static_median_mm = median(eta_rows, 1, 'omitnan');
+Summary.eta_static_iqr_mm = iqr(eta_rows, 1);
+Summary.eta_static_median_mm = Summary.eta_static_median_mm - Summary.eta_static_median_mm(1);
+Summary.eta_static_median_mm(1) = 0;
+
+eta_limit = max(abs(getfield_default_local(S, 'sensor_eta_limit_mm', NaN)), eps);
+Summary.max_abs_static_eta_mm = max(abs(Summary.eta_static_median_mm), [], 'omitnan');
+Summary.max_iqr_eta_mm = max(Summary.eta_static_iqr_mm, [], 'omitnan');
+Summary.at_bound_flag = Summary.max_abs_static_eta_mm >= ...
+    getfield_default_local(S, 'eta_boundary_fraction', 0.90) * eta_limit;
+Summary.stable_flag = Summary.window_count >= 3 && ...
+    Summary.max_iqr_eta_mm <= 0.5 * eta_limit && ~Summary.at_bound_flag;
+
+if Summary.stable_flag
+    Summary.status = 'stable_static_case_eta_candidate';
+    Summary.note = 'Window eta is stable enough to consider a future fixed static-case eta refit.';
+else
+    Summary.status = 'diagnostic_only';
+    Summary.note = 'Window eta is not yet accepted as a formal shared static-case model.';
 end
 end
 
@@ -2317,6 +3815,10 @@ for i = 1:numel(fields)
     value = preview.(f);
 
     if isnumeric(value) || islogical(value)
+        if numel(value) == n
+            preview.(f) = value(idx);
+        end
+    elseif isstring(value) || iscellstr(value)
         if numel(value) == n
             preview.(f) = value(idx);
         end
@@ -2358,6 +3860,21 @@ end
     make_S_like_from_result_local(result));
 
 rec.x = bundle.x(idx);
+if isfield(bundle, 'x_abs')
+    rec.x_abs = bundle.x_abs(idx);
+end
+if isfield(bundle, 'x_center')
+    rec.x_center = bundle.x_center(idx);
+end
+if isfield(bundle, 'x_coordinate_frame')
+    rec.x_coordinate_frame = bundle.x_coordinate_frame(idx);
+end
+if isfield(bundle, 'query_safe_domain_left')
+    rec.query_safe_domain_left = bundle.query_safe_domain_left(idx);
+end
+if isfield(bundle, 'query_safe_domain_right')
+    rec.query_safe_domain_right = bundle.query_safe_domain_right(idx);
+end
 rec.v_obs = bundle.v(idx);
 rec.v_pred = Vpred(idx);
 rec.t = bundle.t(idx);
@@ -2377,13 +3894,22 @@ S.overshoot_penalty_weight = 100;
 end
 
 
-function Summary = build_resonance_summary_local(Trend)
+function Summary = build_resonance_summary_local(Trend, JointEOSummary)
 Summary = struct();
+if nargin < 2 || isempty(JointEOSummary)
+    JointEOSummary = struct();
+end
 
 if isempty(Trend) || height(Trend) == 0
     Summary.valid_window_count = 0;
     Summary.best_window_id = NaN;
     Summary.dominant_eo = NaN;
+    Summary.trend_dominant_eo = NaN;
+    Summary.joint_best_eo = NaN;
+    Summary.joint_status = 'empty';
+    Summary.reported_eo = NaN;
+    Summary.reported_freq_hz = NaN;
+    Summary.reported_eo_source = 'none';
     Summary.mean_freq_hz = NaN;
     Summary.median_freq_hz = NaN;
     return;
@@ -2397,6 +3923,14 @@ Summary.valid_window_count = nnz(valid);
 if ~any(valid)
     Summary.best_window_id = NaN;
     Summary.dominant_eo = NaN;
+    Summary.trend_dominant_eo = NaN;
+    Summary.joint_best_eo = getfield_default_local( ...
+        JointEOSummary, 'best_EO', NaN);
+    Summary.joint_status = getfield_default_local( ...
+        JointEOSummary, 'status', 'empty');
+    Summary.reported_eo = Summary.joint_best_eo;
+    Summary.reported_freq_hz = NaN;
+    Summary.reported_eo_source = 'joint_no_valid_trend';
     Summary.mean_freq_hz = NaN;
     Summary.median_freq_hz = NaN;
     return;
@@ -2410,9 +3944,176 @@ Summary.best_window_id = Trend.window_id(valid_rows(local_best));
 
 eos = Trend.EO_id(valid);
 
-Summary.dominant_eo = mode(eos);
+Summary.trend_dominant_eo = mode(eos);
+Summary.dominant_eo = Summary.trend_dominant_eo;
 Summary.mean_freq_hz = mean(Trend.fn_id(valid), 'omitnan');
 Summary.median_freq_hz = median(Trend.fn_id(valid), 'omitnan');
+
+Summary.joint_best_eo = getfield_default_local(JointEOSummary, 'best_EO', NaN);
+Summary.joint_status = getfield_default_local(JointEOSummary, 'status', 'empty');
+
+if isfinite(Summary.joint_best_eo)
+    Summary.reported_eo = Summary.joint_best_eo;
+    Summary.reported_eo_source = 'joint_eo_summary';
+else
+    Summary.reported_eo = Summary.trend_dominant_eo;
+    Summary.reported_eo_source = 'trend_mode';
+end
+
+Summary.reported_freq_hz = compute_reported_frequency_local( ...
+    Trend, valid, Summary.reported_eo);
+end
+
+
+function f_hz = compute_reported_frequency_local(Trend, valid, reported_eo)
+f_hz = NaN;
+
+if isempty(Trend) || ~isfinite(reported_eo)
+    return;
+end
+
+same_eo = valid & isfinite(Trend.EO_id) & Trend.EO_id == reported_eo;
+
+if any(same_eo) && ismember('fn_id', Trend.Properties.VariableNames)
+    f_hz = median(Trend.fn_id(same_eo), 'omitnan');
+end
+
+if isfinite(f_hz)
+    return;
+end
+
+if ismember('rot_freq_mean_hz', Trend.Properties.VariableNames)
+    rot_hz = median(Trend.rot_freq_mean_hz(valid), 'omitnan');
+    if isfinite(rot_hz)
+        f_hz = reported_eo * rot_hz;
+    end
+end
+end
+
+
+function Summary = build_joint_eo_summary_local(WindowResult, S)
+Summary = struct();
+Summary.status = 'empty';
+Summary.valid_window_count = 0;
+Summary.best_EO = NaN;
+Summary.second_EO = NaN;
+Summary.best_mean_weighted_rmse = NaN;
+Summary.second_mean_weighted_rmse = NaN;
+Summary.best_joint_score = NaN;
+Summary.second_joint_score = NaN;
+Summary.gap_ratio = NaN;
+Summary.low_gap_threshold = S.eo_low_gap_ratio_threshold;
+Summary.joint_missing_window_penalty = S.joint_missing_window_penalty;
+Summary.joint_min_window_fraction = S.joint_min_window_fraction;
+Summary.EOTable = table();
+
+if isempty(WindowResult)
+    return;
+end
+
+eo_vec = [];
+rmse_vec = [];
+window_vec = [];
+
+for iw = 1:numel(WindowResult)
+    if ~isfield(WindowResult(iw), 'Result') || isempty(WindowResult(iw).Result)
+        continue;
+    end
+
+    R = WindowResult(iw).Result;
+
+    if ~isfield(R, 'CandidateTable') || isempty(R.CandidateTable) || ...
+            ~istable(R.CandidateTable)
+        continue;
+    end
+
+    T = R.CandidateTable;
+
+    if ~all(ismember({'EO', 'weighted_voltage_rmse'}, T.Properties.VariableNames))
+        continue;
+    end
+
+    ok = isfinite(T.EO) & isfinite(T.weighted_voltage_rmse);
+
+    if ismember('status', T.Properties.VariableNames)
+        ok = ok & strcmpi(string(T.status), "ok");
+    end
+
+    if ~any(ok)
+        continue;
+    end
+
+    eo_vec = [eo_vec; T.EO(ok)]; %#ok<AGROW>
+    rmse_vec = [rmse_vec; T.weighted_voltage_rmse(ok)]; %#ok<AGROW>
+    window_vec = [window_vec; repmat(iw, nnz(ok), 1)]; %#ok<AGROW>
+end
+
+if isempty(eo_vec)
+    Summary.status = 'no_valid_candidate_table';
+    return;
+end
+
+eo_list = unique(eo_vec(:));
+rows = repmat(struct( ...
+    'EO', NaN, ...
+    'window_count', 0, ...
+    'mean_weighted_rmse', NaN, ...
+    'median_weighted_rmse', NaN, ...
+    'min_weighted_rmse', NaN, ...
+    'window_fraction', NaN, ...
+    'low_coverage_flag', false, ...
+    'joint_score', NaN, ...
+    'total_score', NaN), numel(eo_list), 1);
+
+valid_window_count = numel(unique(window_vec));
+
+for i = 1:numel(eo_list)
+    eo = eo_list(i);
+    m = eo_vec == eo;
+    rows(i).EO = eo;
+    rows(i).window_count = numel(unique(window_vec(m)));
+    rows(i).mean_weighted_rmse = mean(rmse_vec(m), 'omitnan');
+    rows(i).median_weighted_rmse = median(rmse_vec(m), 'omitnan');
+    rows(i).min_weighted_rmse = min(rmse_vec(m), [], 'omitnan');
+    rows(i).window_fraction = rows(i).window_count / max(valid_window_count, 1);
+    rows(i).low_coverage_flag = rows(i).window_fraction < S.joint_min_window_fraction;
+    rows(i).joint_score = rows(i).mean_weighted_rmse .* ...
+        (1 + S.joint_missing_window_penalty .* (1 - rows(i).window_fraction));
+    rows(i).total_score = rows(i).mean_weighted_rmse / ...
+        max(rows(i).window_count, 1);
+end
+
+T = struct2table(rows);
+T = sortrows(T, { ...
+    'low_coverage_flag', ...
+    'joint_score', ...
+    'median_weighted_rmse', ...
+    'EO'}, ...
+    {'ascend', 'ascend', 'ascend', 'ascend'});
+
+Summary.status = 'ok';
+Summary.valid_window_count = valid_window_count;
+Summary.EOTable = T;
+Summary.best_EO = T.EO(1);
+Summary.best_mean_weighted_rmse = T.mean_weighted_rmse(1);
+Summary.best_joint_score = T.joint_score(1);
+
+if T.low_coverage_flag(1)
+    Summary.status = 'low_window_coverage_ambiguous';
+end
+
+if height(T) >= 2
+    Summary.second_EO = T.EO(2);
+    Summary.second_mean_weighted_rmse = T.mean_weighted_rmse(2);
+    Summary.second_joint_score = T.joint_score(2);
+    Summary.gap_ratio = (T.joint_score(2) - T.joint_score(1)) / ...
+        max(abs(T.joint_score(1)), eps);
+
+    if Summary.gap_ratio < S.eo_low_gap_ratio_threshold && ...
+            ~strcmpi(Summary.status, 'low_window_coverage_ambiguous')
+        Summary.status = 'low_gap_ambiguous';
+    end
+end
 end
 
 
