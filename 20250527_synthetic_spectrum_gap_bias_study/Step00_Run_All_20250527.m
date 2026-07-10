@@ -1,0 +1,14 @@
+%% Step00: run the complete 20250527 synthetic spectrum/gap-bias study.
+
+clear; clc; close all;
+
+Step01_Build_SyntheticStrainEvidence_20250527;
+Step02_BundleVoltageBiasStudy_20250527;
+Step03_Jacobian_Coupling_Diagnostic_20250527;
+Step04_StaticDg_IdentifiabilitySweep_20250527;
+Step05_OrthogonalizedResidualTilt_20250527;
+Step06_GapTiltDirection_Decoupling_20250527;
+Step07_ProtectedTwoStageResidualTilt_20250527;
+Step08_PhysicalGapInitialTilt_SuperGaussianComparison_20250527;
+
+disp('20250527 synthetic spectrum/gap-bias study completed.');

@@ -1,0 +1,7 @@
+check_name,pass,value,tolerance,message
+clean_A_fixed_template,1,0,0.005,No-gap clean exact physical methods must recover A.
+zero_A_fixed_template,1,0,0.005,Zero-amplitude clean exact physical methods must recover near zero.
+clean_A_gap_fixed_tilt,1,0,0.005,No-gap clean exact physical methods must recover A.
+zero_A_gap_fixed_tilt,1,0,0.005,Zero-amplitude clean exact physical methods must recover near zero.
+gap6_clean_dg_gap_fixed_tilt,1,0.000272404184757311,0.008,Gap-fixed-tilt must estimate injected CH6 dg in the clean gap-only case.
+gap6_initial_tilt_clean_dg_gap_fixed_tilt,1,0.000400556300866869,0.008,Gap-fixed-tilt must estimate CH6 dg when initial tilt is correctly calibrated.
