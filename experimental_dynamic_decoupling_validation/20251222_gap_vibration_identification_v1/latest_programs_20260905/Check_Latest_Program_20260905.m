@@ -1,0 +1,83 @@
+function report = Check_Latest_Program_20260905()
+%CHECK_LATEST_PROGRAM_20260905 Check the frozen experiment package.
+rootDir = fileparts(mfilename('fullpath'));
+files = { ...
+    'Main01_Extract_OPR_Blade_Timing_20251222.m', ...
+    'Main02_Calculate_FullTime_BTT_Displacement_20251222.m', ...
+    'Main03_Prepare_Strain_Resonance_Evidence_20251222.m', ...
+    'Main04_Detect_BTT_STE_Resonance_20251222.m', ...
+    'Main05_Foundation_NoGap_VPTopK_20251222.m', ...
+    'Main05_R5_PC1_FrontEnd_20251222.m', ...
+    'Main06_GapAware_FullWave_Identification_20251222.m', ...
+    'R5_PreMain07_HardGate.m', ...
+    'R5_Audit_SensorWiseDg.m', ...
+    'R5_Compare_Proposed_vs_Foundation.m', ...
+    'Run_R5_Main_20251222.m', ...
+    'Main07_Validate_Identification_With_Strain_20251222.m', ...
+    'Main08_Visualize_Strain_BTT_Waveforms_20251222.m', ...
+    'R5_Plot_Strain_3D_Spectrum_20251222.m', ...
+    'Config_20251222.m', 'Setup_Paths_20251222.m'};
+exists = cellfun(@(f)isfile(fullfile(rootDir,f)), files);
+if ~all(exists)
+    error('Latest package missing: %s', strjoin(files(~exists), ', '));
+end
+for d = {'functions','inputs','analysis'}
+    p = fullfile(rootDir,d{1});
+    if ~isfolder(p), error('Required resource link is missing: %s', p); end
+end
+r5 = fullfile(rootDir,'analysis','r5_anchor_guided_experimental_20260903');
+r5Files = { ...
+    'R5_Build_R4_ExperimentalSurfaceFamily.m', ...
+    'R5_Calibrate_B2_AnchorRegistration.m', ...
+    'R5_Localize_R4_Surface_FromLowSpeed.m', ...
+    'R5_Export_Main10_CompatibleLibrary.m'};
+okR5 = cellfun(@(f)isfile(fullfile(r5,f)),r5Files);
+if ~all(okR5), error('R5 front-end incomplete: %s', strjoin(r5Files(~okR5), ', ')); end
+% Reject accidental dependencies on code outside this frozen package.  Raw
+% experimental data may remain on the configured data drive; only MATLAB
+% source resolution is checked here.
+allM = dir(fullfile(rootDir,'**','*.m'));
+for k = 1:numel(allM)
+    p = fullfile(allM(k).folder,allM(k).name);
+    if strcmpi(p,[mfilename('fullpath'),'.m'])
+        continue
+    end
+    txt = fileread(p);
+    if contains(txt,'old_program') || contains(txt,'legacy_pre_pc1_20260905')
+        error('External legacy code reference found in %s.',p);
+    end
+    if ~isempty(regexp(txt,'addpath\s*\([^;\n]*\.\.\\', 'once'))
+        error('Parent-folder addpath reference found in %s.',p);
+    end
+end
+
+% A frozen production package must contain loadable, locally traceable B1
+% and B5 results, not merely source files with the expected names.
+formalCases = struct( ...
+    'blade',{1,5}, 'tag',{'r01','r04'});
+formalGates = cell(numel(formalCases),1);
+for k = 1:numel(formalCases)
+    c = formalCases(k);
+    resultFile = fullfile(rootDir,'results','gap_aware',sprintf( ...
+        'Main_GapAware_VPTopK_FullWave_20251222_B%d_S123_%s_gapaware.mat', ...
+        c.blade,c.tag));
+    info = dir(resultFile);
+    if isempty(info) || info.bytes == 0
+        error('Formal B%d result is missing or empty: %s',c.blade,resultFile);
+    end
+    D = load(resultFile,'Result');
+    if ~isfield(D,'Result') || ~isfield(D.Result,'foundationStep05File')
+        error('Formal B%d result has incomplete provenance.',c.blade);
+    end
+    foundationInfo = dir(D.Result.foundationStep05File);
+    if isempty(foundationInfo) || foundationInfo.bytes == 0
+        error('Formal B%d Foundation result is missing or empty: %s', ...
+            c.blade,D.Result.foundationStep05File);
+    end
+    formalGates{k} = R5_PreMain07_HardGate(resultFile);
+end
+report = struct('root',rootDir,'entryFiles',{files},'r5Files',{r5Files}, ...
+    'formalGates',{formalGates},'status','PASS');
+fprintf('PASS: frozen experiment package is complete (%d entry files, %d R5 files).\n', ...
+    numel(files),numel(r5Files));
+end

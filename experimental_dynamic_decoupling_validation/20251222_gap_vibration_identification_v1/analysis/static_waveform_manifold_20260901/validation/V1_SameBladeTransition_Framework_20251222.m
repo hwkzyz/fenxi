@@ -1,0 +1,6 @@
+function T=V1_SameBladeTransition_Framework_20251222(trainFcn,predictFcn,methodId)
+thisDir=fileparts(fileparts(mfilename('fullpath'))); outDir=fullfile(thisDir,'results'); U=load(fullfile(outDir,'StaticWaveformFamily_20251222.mat')); F=U.StaticWaveformFamily; Y=F.waveformsB2FixedPeakAlignedMv; x=F.xB2OprAxisMm(:); gaps=F.nominalGapMm(:); blades=F.bladeIds(:).'; [~,nB,nG]=size(Y); rows=[]; g0=1;
+for ib=1:nB, for il=1:nG-1, it=il+1; tr=setdiff(1:nG,it); model=trainFcn(squeeze(Y(:,ib,tr)),gaps(tr),g0); y0=squeeze(Y(:,ib,il)); yt=squeeze(Y(:,ib,it)); yh=y0+(predictFcn(model,gaps(it),y0)-predictFcn(model,gaps(il),y0)); ok=isfinite(yh)&isfinite(yt); if nnz(ok)<20,continue,end; e=yh(ok)-yt(ok); e0=y0(ok)-yt(ok); [pkT,xpkT]=peakLocal(x,yt); [pkP,xpkP]=peakLocal(x,yh); rows(end+1,:)=[blades(ib),gaps(il),gaps(it),sqrt(mean(e.^2)),sqrt(mean(e0.^2)),100*sqrt(mean(e.^2))/max(std(yt(ok)),eps),pkP-pkT,xpkP-xpkT]; end, end
+T=array2table(rows,'VariableNames',{'blade','lowGapMm','targetGapMm','transitionRMSEmV','zeroIncrementRMSEmV','relativeRMSEpct','peakVoltageErrormV','peakPositionErrMm'}); T.methodId=repmat(string(methodId),height(T),1);
+end
+function [v,xp]=peakLocal(x,y), ok=isfinite(y); [v,k]=max(y(ok)); xx=x(ok); yy=y(ok); xp=xx(k); if k>1&&k<numel(xx), p=polyfit(xx(k-1:k+1),yy(k-1:k+1),2); if p(1)<0,xp=-p(2)/(2*p(1)); v=polyval(p,xp); end, end, end

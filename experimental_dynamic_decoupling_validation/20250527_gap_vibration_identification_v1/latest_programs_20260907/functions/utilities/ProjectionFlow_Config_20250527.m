@@ -1,0 +1,32 @@
+function P = ProjectionFlow_Config_20250527()
+%PROJECTIONFLOW_CONFIG_20250527 Compatibility view without an EO prior.
+cfg = Config_20250527();
+P = struct();
+P.dataset = cfg.dataset;
+P.machine.bladeCount = cfg.machine.bladeCount;
+P.machine.oprPulsesPerRev = cfg.machine.oprPulsesPerRevolution;
+P.calibration.buildBladeIds = 1:cfg.machine.bladeCount;
+P.calibration.candidateSensorIds = [1 3 6 7 8];
+P.calibration.mainSensorIds = cfg.case.analysisSensors;
+P.calibration.libraryDirName = 'gap_calibration_library';
+P.calibration.filePrefix = 'GapCalib';
+P.identification.targetBlade = cfg.case.targetBlade;
+P.identification.analysisSensors = cfg.case.analysisSensors;
+P.identification.dynamicCaseName = cfg.case.dynamicCase;
+P.identification.analysisStartMode = 'manual';
+P.identification.analysisStartTimeSec = cfg.case.analysisStartTimeSec;
+P.identification.targetBladePasses = cfg.window.targetBladePasses;
+P.identification.windowBladePasses = cfg.window.windowBladePasses;
+P.identification.slidingStepBladePasses = cfg.window.slidingStepBladePasses;
+P.identification.pulseWindowSec = cfg.window.pulseWindowSec;
+P.projection.useDeltaGapProjectionLimit = cfg.model.useDeltaGapProjectionLimit;
+P.projection.deltaGapLimitMm = cfg.model.deltaGapLimitMm;
+P.projection.alpha = cfg.model.deltaGapProjectionAlpha;
+P.projection.minLimitMm = cfg.model.deltaGapProjectionMinMm;
+P.projection.maxLimitMm = cfg.model.deltaGapLimitMm;
+P.projection.fallbackLimitMm = cfg.model.deltaGapLimitMm;
+P.projection.derivativeStepMm = 1e-4;
+P.projection.sensitivityFloorMvPerMm = 1e-6;
+P.projection.deltaMuLimit = cfg.model.deltaMuLimit;
+P.projection.deltaTauLimitMm = cfg.model.deltaTauLimitMm;
+end

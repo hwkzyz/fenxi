@@ -1,0 +1,6 @@
+function T=V2_LeaveOneGap_Framework_20251222(trainFcn,predictFcn,methodId)
+thisDir=fileparts(fileparts(mfilename('fullpath'))); outDir=fullfile(thisDir,'results'); U=load(fullfile(outDir,'StaticWaveformFamily_20251222.mat')); F=U.StaticWaveformFamily; Y=F.waveformsB2FixedPeakAlignedMv; x=F.xB2OprAxisMm(:); gaps=F.nominalGapMm(:); blades=F.bladeIds(:).'; [~,nB,nG]=size(Y); rows=[]; g0=1;
+for ib=1:nB, for ih=1:nG, tr=setdiff(1:nG,ih); model=trainFcn(squeeze(Y(:,ib,tr)),gaps(tr),g0); yh=predictFcn(model,gaps(ih),squeeze(Y(:,ib,ih))); yt=squeeze(Y(:,ib,ih)); ok=isfinite(yh)&isfinite(yt); if nnz(ok)<20,continue,end; e=yh(ok)-yt(ok); [pkT,xpkT]=peakLocal(x,yt); [pkP,xpkP]=peakLocal(x,yh); rows(end+1,:)=[blades(ib),gaps(ih),sqrt(mean(e.^2)),100*sqrt(mean(e.^2))/max(std(yt(ok)),eps),pkP-pkT,xpkP-xpkT]; end, end
+T=array2table(rows,'VariableNames',{'blade','heldOutGapMm','RMSEmV','relativeRMSEpct','peakVoltageErrormV','peakPositionErrMm'}); T.methodId=repmat(string(methodId),height(T),1);
+end
+function [v,xp]=peakLocal(x,y), ok=isfinite(y); [v,k]=max(y(ok)); xx=x(ok); yy=y(ok); xp=xx(k); if k>1&&k<numel(xx), p=polyfit(xx(k-1:k+1),yy(k-1:k+1),2); if p(1)<0,xp=-p(2)/(2*p(1)); v=polyval(p,xp); end, end, end
