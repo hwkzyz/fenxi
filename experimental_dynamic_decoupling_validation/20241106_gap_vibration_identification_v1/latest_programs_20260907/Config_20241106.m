@@ -124,11 +124,13 @@ cfg.r5.latentMode = 'sensor_conditioned';
 % is fitted in the high-speed window.
 % Localization identified a scalar sensor-conditioned effective gap.
 % Legacy mu/tau is not part of this response surface coordinate.
-cfg.r5.useStaticGapSlopeInDynamic = false;
+cfg.r5.gapBaselineModel = 'sensor_conditioned_scalar';
+cfg.r5.requireStaticAudit = true;
+cfg.r5.minSupportFraction = 0.98;
 cfg.r5.amplitudeLimitMm = 0.50;
 cfg.r5.dxLimitMm = 0.35;
 cfg.r5.deltaGapLimitMm = cfg.model.deltaGapLimitMm;
-cfg.r5.useLocalGapProjection = true;
+cfg.r5.useLocalGapProjection = false;
 cfg.r5.gapProjectionAlpha = 2.5;
 cfg.r5.gapProjectionMinLimitMm = 0.02;
 cfg.r5.gapProjectionSensitivityFloorMvPerMm = 0.05;
@@ -136,16 +138,21 @@ cfg.r5.gapProjectionStepMm = 1e-3;
 cfg.r5.useFoundationVibrationSeedOnly = true;
 % Diagnostic switch for the legacy nested Foundation anchor route.
 cfg.r5.useNestedFoundationAnchor = false;
+cfg.r5.useV1DynamicIncrement = false;
+cfg.r5.auditFoundationReplay = true;
+cfg.r5.foundationReplayToleranceMv = 1e-3;
 % The target offset is a localization/audit quantity.  The bundled template
 % and response surface already share the registered OPR coordinate.
-cfg.r5.useTargetXOffsetInDynamic = false;
-% Frozen legacy V1 identifies the validated 20241106 resonance as EO=12.
-% R5 uses this only as a soft tie-break after complete dg_s refinement.
-cfg.r5.referenceEO = 12;
-cfg.r5.referenceEOTolerance = 0.10;
+cfg.r5.multiStartCount = 5;
+cfg.audit.referenceEO = 12;
 % EO remains a data-driven candidate/refinement variable in the production
 % route. A fixed EO may be used only by separate diagnostic scripts.
 cfg.r5.lockReferenceEO = false;
+% Optional diagnostic: refit all EO candidates on selected windows to audit
+% whether the production Top-K screen recalls the full-wave winner. It is
+% off for formal runs and never constrains the reported EO.
+cfg.r5.auditAllEO = false;
+cfg.r5.auditAllEOWindowIds = [];
 
 cfg.run.showPlots = false;
 cfg.run.saveFigures = false;

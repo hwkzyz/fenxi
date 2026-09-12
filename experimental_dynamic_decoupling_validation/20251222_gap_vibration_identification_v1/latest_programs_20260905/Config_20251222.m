@@ -127,4 +127,5 @@ cfg.lowSpeed.minBinCount = 5;
 cfg.run.showPlots = false;
 cfg.run.saveFigures = false;
 cfg.run.forceRebuild = false;
+cfg.r5.useV1DynamicIncrement = false;
 end

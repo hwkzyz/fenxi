@@ -113,11 +113,13 @@ cfg.r5.latentMode = 'sensor_conditioned';
 % Sensor-conditioned localization identified a scalar effective gap for
 % this blade. The legacy mu/tau belongs to a different static library and
 % must not be inserted into this response coordinate.
-cfg.r5.useStaticGapSlopeInDynamic = false;
+cfg.r5.gapBaselineModel = 'sensor_conditioned_scalar';
+cfg.r5.requireStaticAudit = true;
+cfg.r5.minSupportFraction = 0.98;
 cfg.r5.amplitudeLimitMm = 0.50;
 cfg.r5.dxLimitMm = 0.35;
 cfg.r5.deltaGapLimitMm = cfg.model.deltaGapLimitMm;
-cfg.r5.useLocalGapProjection = true;
+cfg.r5.useLocalGapProjection = false;
 cfg.r5.gapProjectionAlpha = 2.5;
 cfg.r5.gapProjectionMinLimitMm = 0.02;
 cfg.r5.gapProjectionSensitivityFloorMvPerMm = 0.05;
@@ -127,19 +129,24 @@ cfg.r5.useFoundationVibrationSeedOnly = true;
 % the absolute high-speed anchor and fit only its vibration/gap increment.
 % Formal R5 runs keep this off until the route comparison is accepted.
 cfg.r5.useNestedFoundationAnchor = false;
+cfg.r5.useV1DynamicIncrement = false;
+cfg.r5.auditFoundationReplay = true;
+cfg.r5.foundationReplayToleranceMv = 1e-3;
 % The foundation/template coordinates are already OPR-referenced for this
 % condition; the localization target offset is retained for audit but is
 % not applied a second time in the dynamic observation operator.
 % The target offset is a localization/audit quantity.  The bundled template
 % and response surface already share the registered OPR coordinate.
-cfg.r5.useTargetXOffsetInDynamic = false;
-% Frozen legacy V1 and the strain evidence both support EO=14 for this
-% condition.  Keep the reference as a soft post-refinement tie-break.
-cfg.r5.referenceEO = 14;
-cfg.r5.referenceEOTolerance = 0.10;
+cfg.r5.multiStartCount = 5;
+cfg.audit.referenceEO = 14;
 % EO remains a data-driven candidate/refinement variable in the production
 % route. A fixed EO may be used only by separate diagnostic scripts.
 cfg.r5.lockReferenceEO = false;
+% Optional diagnostic: refit all EO candidates on selected windows to audit
+% whether the production Top-K screen recalls the full-wave winner. It is
+% off for formal runs and never constrains the reported EO.
+cfg.r5.auditAllEO = false;
+cfg.r5.auditAllEOWindowIds = [];
 
 cfg.independence.usePreviousWindowCandidate = false;
 cfg.independence.useCausalDxState = false;
