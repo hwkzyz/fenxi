@@ -119,7 +119,7 @@ xF=double(reg.x_scale).*(xResponse-double(reg.tau_mm));
 xLo=min(double(tpl.x_grid)); xHi=max(double(tpl.x_grid)); xLowRaw=xq;
 % The measured low-speed template remains in its own OPR coordinate.
 % target_offset belongs only to the calibrated response-surface map.
-yL=interp1(double(tpl.x_grid(:)),double(tpl.v_grid(:))*1000,xLowRaw,'pchip',NaN);
+yL=interp1(double(tpl.x_grid(:)),template_to_mv(tpl),xLowRaw,'pchip',NaN);
 % The localization contract supplies one sensor-conditioned effective
 % reference gap for each blade.  Do not re-introduce the calibration
 % tilt path here: localization was performed against the scalar-gap
