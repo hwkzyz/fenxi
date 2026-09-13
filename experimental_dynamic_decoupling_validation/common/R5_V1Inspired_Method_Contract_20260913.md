@@ -114,6 +114,15 @@ array failure. After correcting the diagnostic field names, window 1 gives
 (`status=pass`). This is only a one-window regression; the full 18-window
 result remains pending.
 
+The subsequent 18-window run completed without the dimension failure. Windows
+1--17 selected EO12 with `f=631.48--632.41 Hz` and `A=0.318--0.348 mm`.
+Window 18 selected EO6 (`f=316.787 Hz`, `A=0.179 mm`, `RMSE=44.070 mV`),
+while its EO12 alternative had `RMSE=45.284 mV`. This is a near-tie between
+an order-12 resonance and a subharmonic candidate, not a reason to lock EO.
+The run is diagnostic-only for frequency stability; candidate discrimination
+must be improved using the V1 voltage contract, without strain or reference-EO
+constraints.
+
 The three external `gap_only` directories are present, but their artifacts
 are not yet consumable by the common worker through one verified adapter. The
 current `latest_programs` configurations resolve inputs relative to the
