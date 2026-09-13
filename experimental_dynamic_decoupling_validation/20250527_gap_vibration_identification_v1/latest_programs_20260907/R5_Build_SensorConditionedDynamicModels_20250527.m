@@ -1,6 +1,7 @@
-function models = R5_Build_SensorConditionedDynamicModels_20250527(sidecarFile, templateFile, targetBlade)
+function models = R5_Build_SensorConditionedDynamicModels_20250527(sidecarFile, templateFile, targetBlade, v1Calibration)
 % Build the formal R5 dynamic interface: only dg_s is window-varying.
 cfg = Config_20250527();
+if nargin < 4, v1Calibration = []; end
 if nargin < 1 || isempty(sidecarFile), sidecarFile=fullfile(cfg.paths.results,'r5_sensor_conditioned_sidecar.mat'); end
 if nargin < 2 || isempty(templateFile), templateFile=cfg.files.lowSpeedTemplate; end
 if nargin < 3 || isempty(targetBlade), targetBlade=cfg.case.targetBlade; end
@@ -25,6 +26,16 @@ for i=1:numel(L.sensor)
     end
     assert(~isempty(ib),'R5:TemplateMissing','Missing low-speed template for B%d/S%d.',targetBlade,sid);
     tpl=templateArray(ib); reg=sc.registration; st=sc.state(j);
+    if ~isempty(v1Calibration) && isfield(v1Calibration,'sensor')
+        iv=find([v1Calibration.sensor.sensorId]==sid,1);
+        if ~isempty(iv)
+            cv=v1Calibration.sensor(iv);
+            if isfield(cv,'tauMm'), reg.tau_mm=cv.tauMm; end
+            if isfield(cv,'xScale'), reg.x_scale=cv.xScale; end
+            if isfield(cv,'muGapPerXMm'), reg.mu_gap_per_x_mm=cv.muGapPerXMm; end
+            if isfield(cv,'voltageGain'), reg.voltage_gain=cv.voltageGain; end
+        end
+    end
     reg.target_x_offset_mm=double(st.target_x_offset_mm);
     coord=struct('templateOffsetMm',0,'responseOffsetMm',reg.target_x_offset_mm, ...
         'responseTauMm',double(reg.tau_mm),'responseScale',double(reg.x_scale), ...

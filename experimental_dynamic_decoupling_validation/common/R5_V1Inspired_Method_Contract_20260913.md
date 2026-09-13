@@ -281,3 +281,12 @@ The bridge audit also identified a concrete static-calibration mismatch. For
 Thus the current R5 increment is evaluated through a different coordinate and
 gain contract, not merely a different response surface. V1 must own these
 static quantities, with only the R5 surface coefficients replaced.
+
+The first implementation of that interface was tested on all 18 windows of
+20250527. The builder now accepts the V1 calibration object and overrides
+`tau`, `xScale`, `muGapPerXMm`, and `voltageGain` before evaluating the R5
+surface. The result remains EO19 (`787.649--787.803 Hz`), with
+`A=0.191--0.198 mm` and `RMSE=58.814--65.819 mV`. This is useful evidence:
+static calibration mismatch explains the amplitude scale change but does not
+alone restore the V1 EO14 frequency family. The R5 surface coefficients or
+their coordinate definition still require a fixed-state audit.
