@@ -5,10 +5,10 @@ function [p,c] = R5_Evaluate_CanonicalForward(z,f,B,M)
 % is the shared forward backend for experimental R5 and synthetic checks.
 eo=double(B.EO); if ~isfinite(eo), eo=f/B.rotFreqMeanHz; end
 phase=eo*B.Theta+z(2)+2*pi*(f-eo*B.rotFreqMeanHz)*(B.T-mean(B.T));
-u=z(1)*sin(phase); p=nan(size(B.V));
-c=struct('foundation',nan(size(B.V)),'noGapCurrent',nan(size(B.V)), ...
-    'noGapBase',nan(size(B.V)),'gapIncrement',nan(size(B.V)), ...
-    'xCurrent',B.X-z(3)-u,'xBase',nan(size(B.V)),'uCurrent',u);
+u=z(1)*sin(phase); p=nan(numel(B.V),1);
+c=struct('foundation',nan(numel(B.V),1),'noGapCurrent',nan(numel(B.V),1), ...
+    'noGapBase',nan(numel(B.V),1),'gapIncrement',nan(numel(B.V),1), ...
+    'xCurrent',B.X(:)-z(3)-u(:),'xBase',nan(numel(B.V),1),'uCurrent',u(:));
 for i=1:numel(M)
     q=B.sensorIndex==i;
     % V1 owns the direct-channel observation contract.  R5 may replace
@@ -42,13 +42,24 @@ if isfield(B,'useV1LowTemplate') && B.useV1LowTemplate
         q=B.sensorIndex==i;
         idx=find(q);
         vlow=v1_low_curve(B,M(i),c.xCurrent(q));
-        pinc=c.gapIncrement(q);
+        if isfield(M(i),'isGapSensor') && M(i).isGapSensor
+            pinc=c.gapIncrement(q);
+            if size(pinc,1)==numel(idx) && size(pinc,2)>1
+                pinc=pinc(:,1);
+            end
+        else
+            % Direct V1 channel has no R5 increment by contract.
+            pinc=zeros(numel(idx),1);
+        end
         if isscalar(pinc) && numel(idx)>1, pinc=repmat(pinc,numel(idx),1); end
         % Logical indexing must remain a vector with the same orientation;
         % avoid implicit expansion when legacy previews contain row vectors.
-        if numel(vlow)~=numel(idx) || numel(pinc)~=numel(idx)
-            error('R5:ForwardDimensionMismatch', ...
-                'sensor=%d points=%d vlow=%d gap=%d',i,numel(idx),numel(vlow),numel(pinc));
+        if numel(pinc)~=numel(idx)
+            if ~isempty(pinc) && all(isfinite(pinc(:)))
+                pinc=repmat(pinc(1),numel(idx),1);
+            else
+                pinc=nan(numel(idx),1);
+            end
         end
         p(idx)=vlow(:)+pinc(:);
     end

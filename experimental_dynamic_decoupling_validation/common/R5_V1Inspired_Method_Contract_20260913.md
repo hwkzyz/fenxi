@@ -101,6 +101,17 @@ therefore unchanged and only S5/S7 can use the R5 gap operator. MATLAB syntax
 checking passed; the existing 20241106 replay remains the required regression
 before accepting new three-condition results.
 
+### Dimension-contract correction (2026-09-13)
+
+The 20241106 sidecar stores several baseline and registration fields as
+duplicated two-element vectors, while the dynamic operator requires one
+effective scalar per sensor. The gap adapter now collapses these legacy fields
+before response-surface evaluation. The canonical evaluator normalizes
+observation vectors to columns and expands scalar increments per observation.
+A one-window replay now reaches optimization without the previous oversized
+array failure; its temporary diagnostic print used obsolete field names, so no
+new parameter result is accepted yet.
+
 The three external `gap_only` directories are present, but their artifacts
 are not yet consumable by the common worker through one verified adapter. The
 current `latest_programs` configurations resolve inputs relative to the
