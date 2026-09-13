@@ -40,7 +40,11 @@ end
 if isfield(B,'useV1LowTemplate') && B.useV1LowTemplate
     for i=1:numel(M)
         q=B.sensorIndex==i;
-        p(q)=v1_low_curve(B,M(i),c.xCurrent(q))+c.gapIncrement(q);
+        vlow=v1_low_curve(B,M(i),c.xCurrent(q));
+        pinc=c.gapIncrement(q);
+        % Logical indexing must remain a vector with the same orientation;
+        % avoid implicit expansion when legacy previews contain row vectors.
+        p(q)=vlow(:)+pinc(:);
     end
 end
 if isfield(B,'useNestedFoundationAnchor') && B.useNestedFoundationAnchor
