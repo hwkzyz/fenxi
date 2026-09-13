@@ -106,3 +106,13 @@ available R5 sensor sidecars contain only sensors `[5 7]`. The common worker
 correctly rejects this as a sensor-role mismatch. Sensor 2 must therefore be
 reconstructed or explicitly excluded by a reviewed case contract; silently
 changing `analysisSensors` would invalidate the V1 frequency comparison.
+
+After using the existing low-speed-bank adapter to restore sensor 2, a full
+20241106 bridge run was attempted with the external V1 windows and R5 sidecar.
+The worker completed, but the result is an invalid diagnostic: windows 1--5
+selected EO16 at about 842 Hz, windows 6--9 and 12--18 selected EO17 at about
+894 Hz, and amplitudes hit the 0.5 mm bound; RMSE was about 2.3e6 mV. Two
+windows were invalid. Restoring the sensor list alone is therefore not
+enough: the adapted template/response-surface voltage or coordinate contract
+still has a major scale or registration mismatch. These values must not be
+compared with V1 or used as experimental conclusions.
