@@ -132,3 +132,13 @@ reports, per sensor, the template range, the maximum zero-`dg` discrepancy,
 the finite-`dg` increment range, prediction range, and valid support fraction.
 This separates unit/registration failures from EO and vibration optimization
 and is now required before another experimental bridge run.
+
+## Unit correction (2026-09-13)
+
+The 20241106 V1 template contract was checked directly: `Template.Sensor`
+stores `v_grid` in `mV`, while the R5 builder previously multiplied every
+template by `1000` as if it were in volts. This produced the observed
+million-mV bridge residual. The builder now converts according to the explicit
+`voltageUnit` field: `V` is converted once to `mV`, and `mV` is used directly.
+S2 remains the unchanged V1 direct/template channel; the change is only the
+unit boundary shared by the gap-sensor bridge.
