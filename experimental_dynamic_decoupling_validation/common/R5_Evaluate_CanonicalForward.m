@@ -79,7 +79,11 @@ if isstruct(T) && (isfield(T,'SensorBlade') || isfield(T,'Sensor'))
 end
 
 function y=template_values_mv(a)
-u='V'; if isfield(a,'voltageUnit') && ~isempty(a.voltageUnit), u=lower(strtrim(char(a.voltageUnit))); end
+u='v';
+if isfield(a,'voltageUnit') && ~isempty(a.voltageUnit)
+    q=a.voltageUnit; if iscell(q), q=q{1}; end
+    u=lower(strtrim(char(q)));
+end
 y=double(a.v_grid(:));
 if any(strcmp(u,{'v','volt','volts'})), y=1000*y;
 elseif ~any(strcmp(u,{'mv','millivolt','millivolts'})), error('R5:UnknownTemplateVoltageUnit','Unsupported template voltage unit: %s',u); end
