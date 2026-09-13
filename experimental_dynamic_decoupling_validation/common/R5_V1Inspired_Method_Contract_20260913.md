@@ -290,3 +290,9 @@ surface. The result remains EO19 (`787.649--787.803 Hz`), with
 static calibration mismatch explains the amplitude scale change but does not
 alone restore the V1 EO14 frequency family. The R5 surface coefficients or
 their coordinate definition still require a fixed-state audit.
+### Rejected rerun (2026-09-13)
+
+An attempted 20241106 rerun with calibration injection used a template adapter
+that was not the baseline-removed V1 template. It returned EO12/EO16,
+`631.715--842.515 Hz`, `A=0.500 mm`, and `RMSE=683.260--759.315 mV`; the run
+is rejected and does not alter the valid 20241106 frequency conclusion.
