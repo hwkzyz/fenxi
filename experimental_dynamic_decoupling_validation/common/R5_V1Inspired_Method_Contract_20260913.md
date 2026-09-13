@@ -88,3 +88,14 @@ and the sensor sidecar contains `SensorConditionedLibrary`. The gap-library
 file is a calibration bundle, not a dynamic Foundation input. This distinction
 prevents passing a calibration bundle as the window result and silently
 changing the frequency-search contract.
+
+## Current implementation status (2026-09-13)
+
+The three external `gap_only` directories are present, but their artifacts
+are not yet consumable by the common worker through one verified adapter. The
+current `latest_programs` configurations resolve inputs relative to the
+workspace case directory, while the authoritative historical files are under
+the external `gap_only` trees. Consequently no new experimental R5 result is
+reported here. The next admissible run is a V1 waveform self-replay followed
+by the zero-`dg` differential check; a frequency or amplitude result produced
+before those checks is diagnostic only.
