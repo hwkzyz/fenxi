@@ -11,10 +11,18 @@ c=struct('foundation',nan(size(B.V)),'noGapCurrent',nan(size(B.V)), ...
     'xCurrent',B.X-z(3)-u,'xBase',nan(size(B.V)),'uCurrent',u);
 for i=1:numel(M)
     q=B.sensorIndex==i;
-    [p(q),d]=M(i).evaluate(z(3+i),c.xCurrent(q));
+    % V1 owns the direct-channel observation contract.  R5 may replace
+    % only the static gap increment on a declared gap sensor; a direct
+    % sensor must remain exactly its V1 template response.
+    if isfield(M(i),'isGapSensor') && M(i).isGapSensor
+        dg_i=z(3+i);
+    else
+        dg_i=0;
+    end
+    [p(q),d]=M(i).evaluate(dg_i,c.xCurrent(q));
     c.noGapCurrent(q)=d.noGapMv; c.gapIncrement(q)=d.gapIncrementMv;
     if isfield(B,'useV1DynamicIncrement') && B.useV1DynamicIncrement
-        [c.gapIncrement(q),okv]=v1_dynamic_increment(B,M(i),z(3+i),c.xCurrent(q));
+        [c.gapIncrement(q),okv]=v1_dynamic_increment(B,M(i),dg_i,c.xCurrent(q));
         p(q)=d.noGapMv+c.gapIncrement(q); p(q(~okv))=NaN;
     end
 end

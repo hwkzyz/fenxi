@@ -91,6 +91,16 @@ changing the frequency-search contract.
 
 ## Current implementation status (2026-09-13)
 
+### Direct-channel protection
+
+The canonical evaluator now enforces the sensor-role boundary at runtime:
+`M(i).isGapSensor == false` forces `dg_i=0`, so a direct V1 channel keeps its
+original template response and cannot receive an R5 gap increment. This is a
+structural invariant, not an EO or strain constraint. For 20241106, S2 is
+therefore unchanged and only S5/S7 can use the R5 gap operator. MATLAB syntax
+checking passed; the existing 20241106 replay remains the required regression
+before accepting new three-condition results.
+
 The three external `gap_only` directories are present, but their artifacts
 are not yet consumable by the common worker through one verified adapter. The
 current `latest_programs` configurations resolve inputs relative to the
