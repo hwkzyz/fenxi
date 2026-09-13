@@ -85,6 +85,18 @@ else
         [c.noGapBase(q),~]=M(i).evaluate(0,B.X(q)-z0(3)-u0(q));
     end
 end
+% V1's dynamic contract includes the spatial template shift between the
+% current vibration coordinate and the frozen zero-vibration coordinate.
+% Apply that shift only on gap sensors; direct channels remain pure V1
+% template observations.  The previous implementation omitted this term,
+% so dx and amplitude were forced to compensate for a missing waveform term.
+if isfield(B,'useV1LowTemplate') && B.useV1LowTemplate
+    for i=1:numel(M)
+        if ~isfield(M(i),'isGapSensor') || ~M(i).isGapSensor, continue; end
+        q=B.sensorIndex==i;
+        p(q)=p(q)+(c.noGapCurrent(q)-c.noGapBase(q));
+    end
+end
 
 function v=v1_low_curve(B,m,x)
 T=B.v1Template; SI=B.v1SensorInfo;

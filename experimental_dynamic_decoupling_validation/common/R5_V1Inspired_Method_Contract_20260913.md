@@ -232,3 +232,8 @@ for every window, `f=631.406--632.379 Hz`, `A=0.335--0.384 mm`, and
 842/894-Hz, and million-mV result was therefore confirmed as a template-unit
 failure, not an experimental EO jump. This run is the first valid 20241106
 V1-contract/R5-gap-operator bridge baseline.
+
+The same legacy-vector normalization was applied to the 20250527 gap adapter.
+The complete rerun remains `EO19`, `787.609--787.775 Hz`,
+`A=0.367--0.374 mm`, and `RMSE=55.832--62.403 mV`; the scalar-shape defect
+was real but is not the cause of the 20250527 frequency-family mismatch.
