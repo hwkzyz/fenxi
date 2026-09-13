@@ -274,3 +274,10 @@ same spatial shape but R5 under-scales the active increment by about 29%.
 This is the first direct numerical evidence explaining why the R5 operator
 changes the EO ranking. The next correction must address the response-surface
 scale/registration, not frequency or EO constraints.
+The bridge audit also identified a concrete static-calibration mismatch. For
+20250527 S3, V1 uses `tau=-0.181630 mm`, `xScale=0.989717`, and
+`voltageGain=1.098428`, while the R5 sidecar uses `tau=-0.067074 mm`,
+`xScale=1.005232`, and `voltageGain=0.877992`; S1/S6 show the same pattern.
+Thus the current R5 increment is evaluated through a different coordinate and
+gain contract, not merely a different response surface. V1 must own these
+static quantities, with only the R5 surface coefficients replaced.
