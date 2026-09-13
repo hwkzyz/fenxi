@@ -145,6 +145,13 @@ it shows that the 20250527 R5 static operator changes the EO ranking relative
 to V1. The result is retained as a diagnostic, and no EO or frequency value
 from it is accepted as formal output.
 
+The 20250527 builder was also made unit-aware at both its template preview and
+dynamic baseline paths. Re-running all 18 windows produced the same EO19 and
+787.6--787.8 Hz branch, confirming that its EO shift is not caused by a hidden
+template `mV`/`V` conversion. The remaining discrepancy is therefore in the
+20250527 static response-surface registration/scale or its migrated V1
+candidate contract, and must be isolated with fixed-state per-EO replay.
+
 ## Unit correction (2026-09-13)
 
 The 20241106 V1 template contract was checked directly: `Template.Sensor`
