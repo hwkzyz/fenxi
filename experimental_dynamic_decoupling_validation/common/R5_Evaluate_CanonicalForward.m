@@ -40,11 +40,17 @@ end
 if isfield(B,'useV1LowTemplate') && B.useV1LowTemplate
     for i=1:numel(M)
         q=B.sensorIndex==i;
+        idx=find(q);
         vlow=v1_low_curve(B,M(i),c.xCurrent(q));
         pinc=c.gapIncrement(q);
+        if isscalar(pinc) && numel(idx)>1, pinc=repmat(pinc,numel(idx),1); end
         % Logical indexing must remain a vector with the same orientation;
         % avoid implicit expansion when legacy previews contain row vectors.
-        p(q)=vlow(:)+pinc(:);
+        if numel(vlow)~=numel(idx) || numel(pinc)~=numel(idx)
+            error('R5:ForwardDimensionMismatch', ...
+                'sensor=%d points=%d vlow=%d gap=%d',i,numel(idx),numel(vlow),numel(pinc));
+        end
+        p(idx)=vlow(:)+pinc(:);
     end
 end
 if isfield(B,'useNestedFoundationAnchor') && B.useNestedFoundationAnchor
