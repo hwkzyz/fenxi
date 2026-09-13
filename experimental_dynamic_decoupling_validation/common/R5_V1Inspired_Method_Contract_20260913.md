@@ -133,6 +133,10 @@ the finite-`dg` increment range, prediction range, and valid support fraction.
 This separates unit/registration failures from EO and vibration optimization
 and is now required before another experimental bridge run.
 
+The shared evaluator now applies the same unit conversion and normalizes
+cell-valued MATLAB unit metadata, preventing equivalent `V`/`mV` contracts in
+the 20250527 and 20251222 folders from being interpreted inconsistently.
+
 ## Unit correction (2026-09-13)
 
 The 20241106 V1 template contract was checked directly: `Template.Sensor`
