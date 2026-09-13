@@ -237,3 +237,13 @@ The same legacy-vector normalization was applied to the 20250527 gap adapter.
 The complete rerun remains `EO19`, `787.609--787.775 Hz`,
 `A=0.367--0.374 mm`, and `RMSE=55.832--62.403 mV`; the scalar-shape defect
 was real but is not the cause of the 20250527 frequency-family mismatch.
+
+### Dynamic-contract correction (2026-09-13)
+
+The evaluator was rewritten to include the V1 spatial template-shift term for
+gap sensors: `Vlow(x_current) + [VnoGap(x_current)-VnoGap(x_base)] +
+DeltaV_gap`. Direct channels remain `Vlow(x_current)`. This is the intended
+V1 dynamic contract with only the gap operator replaced. The 20241106 rerun
+still gives EO12 for windows 1--17; window 18 remains an EO6/EO12 near-tie
+(`f=317.060` versus `632.472 Hz`), so the correction is theoretically
+necessary but does not by itself remove the subharmonic ambiguity.
