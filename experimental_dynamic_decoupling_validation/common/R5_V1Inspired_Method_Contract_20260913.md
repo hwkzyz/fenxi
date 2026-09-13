@@ -137,6 +137,14 @@ The shared evaluator now applies the same unit conversion and normalizes
 cell-valued MATLAB unit metadata, preventing equivalent `V`/`mV` contracts in
 the 20250527 and 20251222 folders from being interpreted inconsistently.
 
+The first post-correction 20250527 B1 run remains invalid: all 18 windows
+selected EO19 with `f=787.609--787.775 Hz`, `A=0.367--0.374 mm`, and
+`RMSE=55.832--62.403 mV` (the older sidecar variant similarly selected EO19
+near 788 Hz and hit the amplitude bound). This is not a unit-scale failure;
+it shows that the 20250527 R5 static operator changes the EO ranking relative
+to V1. The result is retained as a diagnostic, and no EO or frequency value
+from it is accepted as formal output.
+
 ## Unit correction (2026-09-13)
 
 The 20241106 V1 template contract was checked directly: `Template.Sensor`
