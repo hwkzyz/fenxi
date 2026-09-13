@@ -123,6 +123,19 @@ The run is diagnostic-only for frequency stability; candidate discrimination
 must be improved using the V1 voltage contract, without strain or reference-EO
 constraints.
 
+## Three-condition status table (2026-09-13)
+
+| condition | V1 gap_only reference | current V1-shell/R5-gap diagnostic | acceptance |
+|---|---|---|---|
+| 20241106 B4 | EO12, about 632 Hz, 0.337--0.386 mm | windows 1--17 EO12, 631.48--632.41 Hz, 0.318--0.348 mm; window 18 EO6/EO12 near-tie | diagnostic until window-18 ambiguity is resolved |
+| 20250527 B1 | EO14, about 580.2 Hz, 0.397--0.406 mm | previous R5-shell run EO19, about 787.6--787.8 Hz, 0.367--0.374 mm | rejected: frequency contract not reproduced |
+| 20251222 B1 | V1 reference pending | one-window EO10, 416.089 Hz, 0.134 mm | rejected: one-window diagnostic only |
+
+The table is deliberately a status record, not a choice of EO or a strain
+calibration. Formal acceptance requires the current shell to reproduce the V1
+frequency family for all three conditions while changing only the gap-sensor
+operator.
+
 The common worker now records `eo_near_tie`, `eo_near_tie_rmse_mv`, and
 `eo_ambiguity` whenever refined EO candidates are within 3% RMSE of the
 winner. This changes reporting only; it does not lock EO or alter the voltage
