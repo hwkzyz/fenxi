@@ -117,6 +117,14 @@ enough: the adapted template/response-surface voltage or coordinate contract
 still has a major scale or registration mismatch. These values must not be
 compared with V1 or used as experimental conclusions.
 
+The fixed-state audit was run for the restored 20241106 model. With `dg=0`,
+all three sensors had zero discrepancy and full support for S2/S7; S5 had
+85.1% support because its response/template domains do not fully overlap. A
+test increment `dg=[0,0.05,0.05]` produced negative increments of about
+10.8--217.1 mV (S5) and 12.0--133.1 mV (S7), with no unit conversion inside
+the audit. This confirms the zero-increment invariant, but also identifies
+S5 domain overlap as a required gate before dynamic fitting.
+
 ## Fixed-state audit tool (2026-09-13)
 
 `R5_AuditFixedStateIncrement` was added as an optimizer-free diagnostic. It
