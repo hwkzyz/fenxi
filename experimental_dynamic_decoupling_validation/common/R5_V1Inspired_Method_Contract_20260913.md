@@ -80,3 +80,11 @@ manifests classify response surfaces, templates, gap libraries, Foundation
 results, V1 gap results, and sensor sidecars. These inventories are an input
 selection aid only; no file is promoted to a formal R5 input until its role and
 coordinate contract are reviewed.
+
+For the 20250527 candidate set, top-level contracts were inspected before any
+dynamic run: the response surface contains `responseSurface`, the low-speed
+template contains `Template`, the V1 result contains `Result/Summary/Trend`,
+and the sensor sidecar contains `SensorConditionedLibrary`. The gap-library
+file is a calibration bundle, not a dynamic Foundation input. This distinction
+prevents passing a calibration bundle as the window result and silently
+changing the frequency-search contract.
