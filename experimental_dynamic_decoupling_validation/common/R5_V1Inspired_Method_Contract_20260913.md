@@ -99,3 +99,10 @@ the external `gap_only` trees. Consequently no new experimental R5 result is
 reported here. The next admissible run is a V1 waveform self-replay followed
 by the zero-`dg` differential check; a frequency or amplitude result produced
 before those checks is diagnostic only.
+
+The first external builder probe also found a concrete contract gap for
+20241106: the V1 window declares analysis sensors `[2 5 7]`, whereas both
+available R5 sensor sidecars contain only sensors `[5 7]`. The common worker
+correctly rejects this as a sensor-role mismatch. Sensor 2 must therefore be
+reconstructed or explicitly excluded by a reviewed case contract; silently
+changing `analysisSensors` would invalidate the V1 frequency comparison.
