@@ -133,6 +133,12 @@ the finite-`dg` increment range, prediction range, and valid support fraction.
 This separates unit/registration failures from EO and vibration optimization
 and is now required before another experimental bridge run.
 
+The 20250527 static observation audit passed for S1/S3/S6: zero-gap
+equivalence, template replay, coordinate consistency, derivative finiteness,
+and full 101-point support all passed. The remaining EO19 branch is therefore
+not a basic template, unit, or static-domain failure; the next diagnostic must
+compare each EO under the same fixed dynamic state.
+
 The shared evaluator now applies the same unit conversion and normalizes
 cell-valued MATLAB unit metadata, preventing equivalent `V`/`mV` contracts in
 the 20250527 and 20251222 folders from being interpreted inconsistently.
