@@ -116,3 +116,11 @@ windows were invalid. Restoring the sensor list alone is therefore not
 enough: the adapted template/response-surface voltage or coordinate contract
 still has a major scale or registration mismatch. These values must not be
 compared with V1 or used as experimental conclusions.
+
+## Fixed-state audit tool (2026-09-13)
+
+`R5_AuditFixedStateIncrement` was added as an optimizer-free diagnostic. It
+reports, per sensor, the template range, the maximum zero-`dg` discrepancy,
+the finite-`dg` increment range, prediction range, and valid support fraction.
+This separates unit/registration failures from EO and vibration optimization
+and is now required before another experimental bridge run.
