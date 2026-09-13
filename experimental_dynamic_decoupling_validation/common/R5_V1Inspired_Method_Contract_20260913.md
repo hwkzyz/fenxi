@@ -142,3 +142,11 @@ million-mV bridge residual. The builder now converts according to the explicit
 `voltageUnit` field: `V` is converted once to `mV`, and `mV` is used directly.
 S2 remains the unchanged V1 direct/template channel; the change is only the
 unit boundary shared by the gap-sensor bridge.
+
+The corrected 20241106 bridge was rerun on all 18 windows. It returned EO12
+for every window, `f=631.406--632.379 Hz`, `A=0.335--0.384 mm`, and
+`RMSE=35.096--44.155 mV`. This is consistent with the historical V1
+`gap_only` frequency branch and its amplitude/RMSE scale. The prior EO16/17,
+842/894-Hz, and million-mV result was therefore confirmed as a template-unit
+failure, not an experimental EO jump. This run is the first valid 20241106
+V1-contract/R5-gap-operator bridge baseline.
