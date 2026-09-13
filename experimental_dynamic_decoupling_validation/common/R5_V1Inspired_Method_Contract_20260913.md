@@ -133,6 +133,12 @@ the finite-`dg` increment range, prediction range, and valid support fraction.
 This separates unit/registration failures from EO and vibration optimization
 and is now required before another experimental bridge run.
 
+A one-window 20251222 B1 diagnostic selected EO10 at `416.089 Hz`, with
+`A=0.134 mm` and `RMSE=775.875 mV`. This is not accepted as an experimental
+result; it confirms that the unresolved dynamic EO-ranking problem also affects
+20251222, so the three conditions must not yet share a production R5 dynamic
+operator.
+
 The 20250527 static observation audit passed for S1/S3/S6: zero-gap
 equivalence, template replay, coordinate consistency, derivative finiteness,
 and full 101-point support all passed. The remaining EO19 branch is therefore
