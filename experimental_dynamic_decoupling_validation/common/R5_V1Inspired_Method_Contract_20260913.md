@@ -109,8 +109,10 @@ effective scalar per sensor. The gap adapter now collapses these legacy fields
 before response-surface evaluation. The canonical evaluator normalizes
 observation vectors to columns and expands scalar increments per observation.
 A one-window replay now reaches optimization without the previous oversized
-array failure; its temporary diagnostic print used obsolete field names, so no
-new parameter result is accepted yet.
+array failure. After correcting the diagnostic field names, window 1 gives
+`EO=12`, `f=631.696034 Hz`, `A=0.348004 mm`, and `RMSE=44.731417 mV`
+(`status=pass`). This is only a one-window regression; the full 18-window
+result remains pending.
 
 The three external `gap_only` directories are present, but their artifacts
 are not yet consumable by the common worker through one verified adapter. The
