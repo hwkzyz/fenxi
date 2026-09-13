@@ -247,3 +247,10 @@ V1 dynamic contract with only the gap operator replaced. The 20241106 rerun
 still gives EO12 for windows 1--17; window 18 remains an EO6/EO12 near-tie
 (`f=317.060` versus `632.472 Hz`), so the correction is theoretically
 necessary but does not by itself remove the subharmonic ambiguity.
+
+The corresponding 20250527 rerun was completed after this correction. All 18
+windows still select EO19, with `f=787.609--787.775 Hz`, `A=0.367--0.374 mm`,
+and `RMSE=55.832--62.403 mV`. This branch remains diagnostic only. The next
+required experiment is fixed-state replay of every V1 candidate EO (especially
+EO14, EO11, and EO19) with the identical V1 window and support contract, so
+that the ranking change can be attributed to the R5 gap increment itself.
