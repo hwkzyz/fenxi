@@ -73,10 +73,17 @@ if isstruct(T) && (isfield(T,'SensorBlade') || isfield(T,'Sensor'))
     if isfield(T,'SensorBlade'), arr=T.SensorBlade; else, arr=T.Sensor; end
     ii=find([arr.sensor_id]==m.sensorId,1);
     if ~isempty(ii)
-        a=arr(ii); xx=double(a.x_grid(:)); yy=double(a.v_grid(:));
-        if isfield(a,'baseline'), yy=yy-double(a.baseline); end
-        v=1000*interp1(xx,yy,min(max(x,min(xx)),max(xx)),'pchip',nan);
+        a=arr(ii); xx=double(a.x_grid(:));
+        v=interp1(xx,template_values_mv(a),min(max(x,min(xx)),max(xx)),'pchip',nan);
     end
+end
+
+function y=template_values_mv(a)
+u='V'; if isfield(a,'voltageUnit') && ~isempty(a.voltageUnit), u=lower(strtrim(char(a.voltageUnit))); end
+y=double(a.v_grid(:));
+if any(strcmp(u,{'v','volt','volts'})), y=1000*y;
+elseif ~any(strcmp(u,{'mv','millivolt','millivolts'})), error('R5:UnknownTemplateVoltageUnit','Unsupported template voltage unit: %s',u); end
+if isfield(a,'baseline'), y=y-double(a.baseline); end
 end
 % A baseline-subtracted V1 template is the no-gap curve.  The old
 % gap_only contract also contained a frozen operating-gap increment
