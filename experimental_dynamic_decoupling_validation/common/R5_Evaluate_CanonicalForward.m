@@ -94,7 +94,9 @@ if isfield(B,'useV1LowTemplate') && B.useV1LowTemplate
     for i=1:numel(M)
         if ~isfield(M(i),'isGapSensor') || ~M(i).isGapSensor, continue; end
         q=B.sensorIndex==i;
-        p(q)=p(q)+(c.noGapCurrent(q)-c.noGapBase(q));
+        dd=c.noGapCurrent(q)-c.noGapBase(q);
+        ok=isfinite(dd);
+        pp=p(q); pp(ok)=pp(ok)+dd(ok); p(q)=pp;
     end
 end
 
