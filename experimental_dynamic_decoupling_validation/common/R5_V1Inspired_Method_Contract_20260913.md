@@ -254,3 +254,12 @@ and `RMSE=55.832--62.403 mV`. This branch remains diagnostic only. The next
 required experiment is fixed-state replay of every V1 candidate EO (especially
 EO14, EO11, and EO19) with the identical V1 window and support contract, so
 that the ranking change can be attributed to the R5 gap increment itself.
+
+The fixed-state complete-EO diagnostic for 20250527 window 1 confirms this
+interpretation. EO14 gives `f=580.22 Hz`, `A=0.500 mm`, `RMSE=107.13 mV`;
+EO11 gives `455.74 Hz`, `0.332 mm`, `100.68 mV`; EO19 gives `787.76 Hz`,
+`0.197 mm`, `61.80 mV`; and EO10 gives `414.55 Hz`, `0.321 mm`, `74.35 mV`.
+EO19 is therefore selected by the R5 voltage operator itself, not because the
+correct V1 candidate was omitted. Forcing EO14 would be an invalid frequency
+constraint. Before production results, the R5 increment must be audited at
+fixed V1 states for sign, scale, x/g registration, and gain.
