@@ -70,3 +70,13 @@ written.  It recovered `EO=14`, `f=581.4000 Hz`, `A=0.2800 mm`,
 This verifies numerical self-consistency of the current R5 backend only; it is
 not evidence that the experimental static registration or amplitude scale is
 correct.
+
+## External input inventory (2026-09-13)
+
+`R5_Build_ExternalInputManifest` indexed the existing external `gap_only`
+folders without copying any data into the source tree. It found 94, 44, and
+114 MAT artifacts for 20241106, 20250527, and 20251222 respectively. The
+manifests classify response surfaces, templates, gap libraries, Foundation
+results, V1 gap results, and sensor sidecars. These inventories are an input
+selection aid only; no file is promoted to a formal R5 input until its role and
+coordinate contract are reviewed.
