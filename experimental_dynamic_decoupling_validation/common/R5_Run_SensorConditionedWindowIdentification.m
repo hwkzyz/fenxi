@@ -6,7 +6,13 @@ sidecarFile = R5_StageMatForMatlab(sidecarFile,'r5_sidecar');
 foundationFile = R5_StageMatForMatlab(foundationFile,'r5_foundation');
 S=load(sidecarFile,'SensorConditionedLibrary'); L=S.SensorConditionedLibrary;
 assert(strcmpi(L.latent_mode,'sensor_conditioned'),'R5:LatentMode');
-models=modelBuilder(sidecarFile,templateFile,cfg.case.targetBlade);
+Q=load(foundationFile,'Result'); R=Q.Result; W=R.WindowResult;
+try
+    models=modelBuilder(sidecarFile,templateFile,cfg.case.targetBlade,W(1).bundle.CorrectedGapLibrary);
+catch ME
+    if ~strcmp(ME.identifier,'MATLAB:TooManyInputs'), rethrow(ME); end
+    models=modelBuilder(sidecarFile,templateFile,cfg.case.targetBlade);
+end
 ids=[models.sensorId]; assert(isequal(sort(ids),sort(cfg.case.analysisSensors)),'R5:SensorRoleMismatch');
 staticAudit=[];
 if isfield(cfg,'r5') && isfield(cfg.r5,'requireStaticAudit') && cfg.r5.requireStaticAudit
@@ -28,7 +34,7 @@ if isfield(cfg.case,'gapSensors')
         'Builder gap-role flags do not match cfg.case.gapSensors.');
 end
 fit_bounds(cfg);
-Q=load(foundationFile,'Result'); R=Q.Result; W=R.WindowResult; rows=repmat(empty_row(),numel(W),1);
+rows=repmat(empty_row(),numel(W),1);
 for iw=1:numel(W)
     B=W(iw).CoreBundlePreview; bundle=make_bundle(B,ids,cfg,W(iw));
     replay=foundation_replay_audit(bundle,models,cfg);
