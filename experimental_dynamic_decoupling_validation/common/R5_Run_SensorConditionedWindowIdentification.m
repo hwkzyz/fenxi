@@ -275,6 +275,16 @@ if auditAll
 end
 best.eo_screen_table=screen;
 best.candidate_table=candidates;
+% Report near-equivalent EO solutions instead of silently treating a tiny
+% SSE difference as a physically decisive order choice.
+if ~isempty(candidates) && isfinite(bestRmse)
+    near=double([candidates.rmse_mv]) <= bestRmse*(1+0.03);
+    best.eo_near_tie=double([candidates(near).EO]);
+    best.eo_near_tie_rmse_mv=double([candidates(near).rmse_mv]);
+    best.eo_ambiguity=nnz(near)>1;
+else
+    best.eo_near_tie=[]; best.eo_near_tie_rmse_mv=[]; best.eo_ambiguity=false;
+end
 best.audit_all_eo_table=allCandidates;
 best.audit_all_eo_best_rmse_mv=allBest;
 best.audit_all_eo_best_EO=allBestEO;
@@ -524,7 +534,7 @@ a.pass=isfinite(a.rmse_mv) && a.rmse_mv<=tol;
 end
 
 function r=empty_row()
-r=struct('window_id',NaN,'lap_range',[NaN NaN],'status','unprocessed','quality_class','unprocessed','EO',NaN,'frequency_hz',NaN,'amplitude_mm',NaN,'phase_rad',NaN,'dx_mm',NaN,'delta_gap_mm',NaN,'delta_gap_limit_mm',NaN,'rmse_mv',NaN,'sse_mv2',NaN,'baseline_rmse_mv',NaN,'increment_rms_mv',NaN,'anchor_rmse_mv',NaN,'anchor_max_abs_mv',NaN,'foundation_replay_available',false,'foundation_replay_rmse_mv',NaN,'foundation_replay_max_abs_mv',NaN,'foundation_replay_pass',false,'sensor_rmse_mv',NaN,'sensor_baseline_rmse_mv',NaN,'sensor_increment_rms_mv',NaN,'exitflag',NaN,'residual_norm',NaN,'hit_boundary',false,'support_pass',false,'support_valid_count',NaN,'support_total_count',NaN,'support_fraction',NaN,'support_info',struct(),'a_bound_hit',false,'dx_bound_hit',false,'dg_bound_hit',false,'multi_start_count',NaN,'start_table',struct([]),'eo_screen_table',struct([]),'candidate_table',struct([]),'audit_all_eo_table',struct([]),'audit_all_eo_best_rmse_mv',NaN,'audit_all_eo_best_EO',NaN,'topk_recall_global',NaN,'candidate_screen_mode','');
+r=struct('window_id',NaN,'lap_range',[NaN NaN],'status','unprocessed','quality_class','unprocessed','EO',NaN,'frequency_hz',NaN,'amplitude_mm',NaN,'phase_rad',NaN,'dx_mm',NaN,'delta_gap_mm',NaN,'delta_gap_limit_mm',NaN,'rmse_mv',NaN,'sse_mv2',NaN,'baseline_rmse_mv',NaN,'increment_rms_mv',NaN,'anchor_rmse_mv',NaN,'anchor_max_abs_mv',NaN,'foundation_replay_available',false,'foundation_replay_rmse_mv',NaN,'foundation_replay_max_abs_mv',NaN,'foundation_replay_pass',false,'sensor_rmse_mv',NaN,'sensor_baseline_rmse_mv',NaN,'sensor_increment_rms_mv',NaN,'exitflag',NaN,'residual_norm',NaN,'hit_boundary',false,'support_pass',false,'support_valid_count',NaN,'support_total_count',NaN,'support_fraction',NaN,'support_info',struct(),'a_bound_hit',false,'dx_bound_hit',false,'dg_bound_hit',false,'multi_start_count',NaN,'start_table',struct([]),'eo_screen_table',struct([]),'candidate_table',struct([]),'eo_near_tie',[],'eo_near_tie_rmse_mv',[],'eo_ambiguity',false,'audit_all_eo_table',struct([]),'audit_all_eo_best_rmse_mv',NaN,'audit_all_eo_best_EO',NaN,'topk_recall_global',NaN,'candidate_screen_mode','');
 end
 
 function limits=local_gap_projection_limits(B,M,A,phi,dx,f0,globalLimit,cfg)

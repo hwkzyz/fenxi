@@ -123,6 +123,12 @@ The run is diagnostic-only for frequency stability; candidate discrimination
 must be improved using the V1 voltage contract, without strain or reference-EO
 constraints.
 
+The common worker now records `eo_near_tie`, `eo_near_tie_rmse_mv`, and
+`eo_ambiguity` whenever refined EO candidates are within 3% RMSE of the
+winner. This changes reporting only; it does not lock EO or alter the voltage
+objective. It makes the 20241106 window-18 EO6/EO12 ambiguity explicit in every
+future run.
+
 The three external `gap_only` directories are present, but their artifacts
 are not yet consumable by the common worker through one verified adapter. The
 current `latest_programs` configurations resolve inputs relative to the
