@@ -263,3 +263,14 @@ EO19 is therefore selected by the R5 voltage operator itself, not because the
 correct V1 candidate was omitted. Forcing EO14 would be an invalid frequency
 constraint. Before production results, the R5 increment must be audited at
 fixed V1 states for sign, scale, x/g registration, and gain.
+
+The increment bridge was then corrected to pass the actual target blade into
+the R5 model builder (the old diagnostic accidentally passed the first sensor
+ID). On 20250527, fixed V1 gap-only states give zero increment on S1/S6
+because their V1 `dg` is zero; S3 is the active gap channel. For S3 the R5/V1
+increment gain ratio is `0.709`, correlation `0.986`, RMS difference `22.7 mV`
+(V1 RMS `77.3 mV`, R5 RMS `54.8 mV`). The waveforms therefore have nearly the
+same spatial shape but R5 under-scales the active increment by about 29%.
+This is the first direct numerical evidence explaining why the R5 operator
+changes the EO ranking. The next correction must address the response-surface
+scale/registration, not frequency or EO constraints.
