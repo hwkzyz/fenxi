@@ -36,8 +36,12 @@ for i=1:numel(L.sensor)
         'responseDomainMm',[min(L.x_mm) max(L.x_mm)],'gapDomainMm',[min(L.gap_mm) max(L.gap_mm)], ...
         'templateBaseline',double(tpl.baseline),'templateVoltageUnit',get_template_unit(tpl), ...
         'templateEvaluate',@(xq) eval_template(tpl,xq), ...
-        'evaluate',@(dg,xq) eval_one(st.B,L.x_mm,L.gap_mm,L.gref_mm,tpl,reg,st.gap_mm,dg,xq));
+        'evaluate',@(dg,xq) eval_one(st.B,L.x_mm,L.gap_mm,scalar_value(L.gref_mm),tpl,reg,scalar_value(st.gap_mm),dg,xq));
     models(end+1)=m; %#ok<AGROW>
+end
+
+function v=scalar_value(v)
+v=double(v(:)); v=v(isfinite(v)); assert(~isempty(v),'R5:MissingScalar'); v=mean(v);
 end
 assert(~isempty(models),'R5:NoDynamicSensors','No target-blade sensor states found.');
 end
@@ -71,7 +75,7 @@ else
     xOffset=0;
 end
 xResponse=xq-xOffset;
-xF=double(reg.x_scale).*(xResponse-double(reg.tau_mm));
+xF=double(reg.x_scale(1)).*(xResponse-double(reg.tau_mm(1)));
 xLo=min(double(tpl.x_grid)); xHi=max(double(tpl.x_grid)); xLowRaw=xq;
 % Localization maps the measured template abscissa xa into the response
 % surface with x_scale*(xa-tau-target_offset). The measured template stays
@@ -80,17 +84,17 @@ yL=interp1(double(tpl.x_grid(:)),template_values_mv(tpl),xLowRaw,'pchip',NaN);
 % The target low-speed template for this condition retains a measurable
 % local clearance slope.  Use that calibrated, frozen baseline when the
 % condition contract enables it; only dg is window-varying.
-    mu=get_reg_field(reg,'mu_gap_per_x_mm',0);
-    gHL=gL + mu.*(xq-double(reg.tau_mm));
+    mu=get_reg_field(reg,'mu_gap_per_x_mm',0); mu=double(mu(1));
+gHL=gL + mu.*(xq-double(reg.tau_mm(1)));
 gHH=gHL+dg;
 gMin=min(gapGrid); gMax=max(gapGrid);
 f0=eval_surface(B,xGrid,gref,gHL,xF); f1=eval_surface(B,xGrid,gref,gHH,xF);
-y=yL+double(reg.voltage_gain).*(f1-f0);
+y=yL+double(reg.voltage_gain(1)).*(f1-f0);
 valid=xLowRaw>=xLo & xLowRaw<=xHi & xF>=min(xGrid) & xF<=max(xGrid) & ...
     gHL>=gMin & gHL<=gMax & gHH>=gMin & gHH<=gMax;
 y(~valid)=NaN;
 info=struct('xQuery',xq,'xRegistered',xF,'gapLowMm',gHL,'gapHighMm',gHH,...
-    'noGapMv',yL,'gapIncrementMv',double(reg.voltage_gain).*(f1-f0),...
+    'noGapMv',yL,'gapIncrementMv',double(reg.voltage_gain(1)).*(f1-f0),...
     'gapClippedMm',gHH,'overshootGapMm',max(gMin-gHH,0)+max(gHH-gMax,0),...
     'overshootXmm',max(xLo-xLowRaw,0)+max(xLowRaw-xHi,0), ...
     'overshootResponseXmm',max(min(xGrid)-xF,0)+max(xF-max(xGrid),0));
