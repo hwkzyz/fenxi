@@ -12,10 +12,8 @@ if ~exist(outputDir,'dir'), mkdir(outputDir); end
 caseName = {'20250527 B1/R01'; '20251222 B1/R01'; '20251222 B5/R04'};
 method = {'Foundation'; 'V1 gap-aware'; 'R5'};
 % Columns: frequency mean, frequency SD, amplitude mean, amplitude SD.
-% 20250527 V1 summary was not part of the accepted formal bundle; retain NaN
-% rather than silently reconstructing it.
 M = [ ...
-    NaN, NaN, NaN, NaN; NaN, NaN, NaN, NaN; 580.1788,0.0417,NaN,NaN; ...
+    580.4849,0.0417,0.3923,0.0041; 580.4741,0.0417,0.3818,0.0041; 580.1788,0.0417,0.4189,0.0041; ...
     582.5353,19.1814,0.1129,0.0054; 582.6485,0.4882,0.1127,0.0038; 582.6463,0.4881,0.1129,0.0038; ...
     633.0219,188.0372,0.1347,0.0588; 631.5735,32.6168,0.1068,0.0232; 631.5717,1.7816,0.1064,0.0219];
 caseIdx = [1;1;1;2;2;2;3;3;3];
@@ -49,6 +47,6 @@ end
 exportgraphics(fig,fullfile(outputDir,'C0_verified_method_comparison.png'),'Resolution',300);
 close(fig);
 report = struct('schema','C0_VERIFIED_METHOD_COMPARISON_V1','outputDir',outputDir, ...
-    'status','generated','note','NaN denotes no accepted formal V1 summary for 20250527.');
+    'status','generated','note','20250527 Foundation/V1 values are from Formal_Comparison_Windows; R5 is fixed-input fullwave_top1.');
 save(fullfile(outputDir,'C0_VerifiedMethodComparison.mat'),'report','T','-v7.3');
 end
