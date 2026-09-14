@@ -463,6 +463,7 @@ end
 z=bestZ; res=bestRes; exitflag=bestExit; fFit=f0+z(end); pred=prediction(z,fFit,B,M);
 fitMask=B.FixedMask & isfinite(B.V); invalid=~isfinite(pred(fitMask));
 r=empty_row(); r.status='pass'; r.EO=double(s.EO); r.frequency_hz=fFit; r.amplitude_mm=z(1); r.phase_rad=z(2); r.dx_mm=z(3); r.delta_gap_mm=z(4:3+n).';
+r.VPred=pred;
 if any(invalid), r.status='invalid_prediction'; r.rmse_mv=Inf; r.exitflag=exitflag; r.start_table=startRows; return; end
 r.support_pass=true;
 r.anchor_rmse_mv=NaN; r.anchor_max_abs_mv=NaN;
@@ -472,6 +473,7 @@ if B.useNestedFoundationAnchor && all(isfinite([B.anchorEO B.anchorF B.anchorA B
 end
 r.rmse_mv=sqrt(mean((pred(fitMask)-B.V(fitMask)).^2)); r.sse_mv2=sum((pred(fitMask)-B.V(fitMask)).^2); sr=nan(1,numel(M)); for ii=1:numel(M), q=B.sensorIndex==ii & fitMask; sr(ii)=sqrt(mean((pred(q)-B.V(q)).^2)); end
 zBase=z; zBase(4:3+n)=0; predBase=prediction(zBase,fFit,B,M); baseOk=isfinite(predBase)&isfinite(B.V);
+r.VPredNoGap=predBase;
 baseOk=baseOk & B.FixedMask;
 r.baseline_rmse_mv=sqrt(mean((predBase(baseOk)-B.V(baseOk)).^2));
 r.increment_rms_mv=sqrt(mean((pred(fitMask)-predBase(fitMask)).^2));
@@ -569,7 +571,7 @@ a.pass=isfinite(a.rmse_mv) && a.rmse_mv<=tol;
 end
 
 function r=empty_row()
-r=struct('window_id',NaN,'lap_range',[NaN NaN],'status','unprocessed','quality_class','unprocessed','EO',NaN,'frequency_hz',NaN,'amplitude_mm',NaN,'phase_rad',NaN,'dx_mm',NaN,'delta_gap_mm',NaN,'delta_gap_limit_mm',NaN,'rmse_mv',NaN,'sse_mv2',NaN,'baseline_rmse_mv',NaN,'increment_rms_mv',NaN,'anchor_rmse_mv',NaN,'anchor_max_abs_mv',NaN,'foundation_replay_available',false,'foundation_replay_rmse_mv',NaN,'foundation_replay_max_abs_mv',NaN,'foundation_replay_pass',false,'sensor_rmse_mv',NaN,'sensor_baseline_rmse_mv',NaN,'sensor_increment_rms_mv',NaN,'exitflag',NaN,'residual_norm',NaN,'hit_boundary',false,'support_pass',false,'support_valid_count',NaN,'support_total_count',NaN,'support_fraction',NaN,'support_info',struct(),'a_bound_hit',false,'dx_bound_hit',false,'dg_bound_hit',false,'multi_start_count',NaN,'multistart_amplitude_sd_mm',NaN,'multistart_amplitude_range_mm',NaN,'amplitude_ambiguous',false,'start_table',struct([]),'eo_screen_table',struct([]),'candidate_table',struct([]),'audit_all_eo_table',struct([]),'audit_all_eo_best_rmse_mv',NaN,'audit_all_eo_best_EO',NaN,'topk_recall_global',NaN,'eo_screen_top1',NaN,'eo_screen_top1_rmse_mv',NaN,'eo_final_vs_screen_top1',false,'eo_consistency_pass',true);
+r=struct('window_id',NaN,'lap_range',[NaN NaN],'status','unprocessed','quality_class','unprocessed','EO',NaN,'frequency_hz',NaN,'amplitude_mm',NaN,'phase_rad',NaN,'dx_mm',NaN,'delta_gap_mm',NaN,'delta_gap_limit_mm',NaN,'rmse_mv',NaN,'sse_mv2',NaN,'baseline_rmse_mv',NaN,'increment_rms_mv',NaN,'anchor_rmse_mv',NaN,'anchor_max_abs_mv',NaN,'foundation_replay_available',false,'foundation_replay_rmse_mv',NaN,'foundation_replay_max_abs_mv',NaN,'foundation_replay_pass',false,'sensor_rmse_mv',NaN,'sensor_baseline_rmse_mv',NaN,'sensor_increment_rms_mv',NaN,'exitflag',NaN,'residual_norm',NaN,'hit_boundary',false,'support_pass',false,'support_valid_count',NaN,'support_total_count',NaN,'support_fraction',NaN,'support_info',struct(),'a_bound_hit',false,'dx_bound_hit',false,'dg_bound_hit',false,'multi_start_count',NaN,'multistart_amplitude_sd_mm',NaN,'multistart_amplitude_range_mm',NaN,'amplitude_ambiguous',false,'start_table',struct([]),'eo_screen_table',struct([]),'candidate_table',struct([]),'audit_all_eo_table',struct([]),'audit_all_eo_best_rmse_mv',NaN,'audit_all_eo_best_EO',NaN,'topk_recall_global',NaN,'eo_screen_top1',NaN,'eo_screen_top1_rmse_mv',NaN,'eo_final_vs_screen_top1',false,'eo_consistency_pass',true,'VPred',[],'VPredNoGap',[]);
 end
 
 function limits=local_gap_projection_limits(B,M,A,phi,dx,f0,globalLimit,cfg)
