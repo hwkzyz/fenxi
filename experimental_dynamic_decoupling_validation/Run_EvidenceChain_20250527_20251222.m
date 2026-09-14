@@ -53,8 +53,10 @@ for ic = 1:numel(p.Results.Cases)
         % 20250527 and 20251222 result bundles.
         if localHasResultStruct(resultFile)
             [rec,~] = localPlot(rec,@()Plot_C_DynamicBatchSummary(resultFile,fullfile(out,'batch')), 'C1_batch');
+        elseif isfile(comparisonCsv)
+            [rec,~] = localPlot(rec,@()Plot_C1_RowOnlyBatchSummary(resultFile,fullfile(out,'batch')), 'C1_rowonly_batch');
         else
-            rec.errors{end+1} = 'C1_batch skipped: row-only result requires a case-specific comparison table.';
+            rec.errors{end+1} = 'C1_batch skipped: row-only result has no usable case-specific input.';
         end
         if ~isempty(comparisonCsv) && isfile(comparisonCsv)
             [rec,~] = localPlot(rec,@()Plot_C2_FrequencyStabilityReferenceAudit(comparisonCsv,referenceCsv,fullfile(out,'frequency_audit'),[name ' ' runName]),'C2_frequency_audit');
@@ -80,7 +82,10 @@ function C = localCase(root,name,includeB5)
 switch name
     case '20250527'
         base = fullfile(root,'20250527_gap_vibration_identification_v1','latest_programs_20260907','results');
-        C.resultFiles = {fullfile(base,'r5_sensor_conditioned_dynamic_fullwave_20260914.mat')};
+        % Use the formally verified fixed-input rerun.  The similarly named
+        % non-fixed file was produced from a mismatched prepared bundle and
+        % yields the rejected ~83 Hz/EO2 branch.
+        C.resultFiles = {fullfile(base,'r5_sensor_conditioned_dynamic_fullwave_fixedinput_20260914.mat')};
         C.labels = {'R5'};
         C.bundleFile = fullfile(base,'fixed_gap','20250526_2500-3500_t400','FixedGap_B1_S136_T001p5s.mat');
         C.comparisonCsv = fullfile(base,'three_method_compare_20260914','ThreeMethod_FrequencyAmplitude_Comparison.csv');
