@@ -25,6 +25,9 @@ for ic = 1:numel(p.Results.Cases)
     C = localCase(root,name,p.Results.IncludeB5);
     for ir = 1:numel(C.resultFiles)
       resultFile = C.resultFiles{ir}; runName = C.labels{ir};
+      comparisonCsv = C.comparisonCsv;
+      referenceCsv = C.referenceCsv;
+      if isfield(C,'comparisonFiles') && ir<=numel(C.comparisonFiles), comparisonCsv=C.comparisonFiles{ir}; referenceCsv=C.referenceFiles{ir}; end
       out = fullfile(root,'results',['evidence_chain_' name '_' runName]);
       if ~exist(out,'dir'), mkdir(out); end
       rec = struct('case',[name '_' runName],'resultFile',resultFile,'outputDir',out, ...
@@ -53,6 +56,9 @@ for ic = 1:numel(p.Results.Cases)
         else
             rec.errors{end+1} = 'C1_batch skipped: row-only result requires a case-specific comparison table.';
         end
+        if ~isempty(comparisonCsv) && isfile(comparisonCsv)
+            [rec,~] = localPlot(rec,@()Plot_C2_FrequencyStabilityReferenceAudit(comparisonCsv,referenceCsv,fullfile(out,'frequency_audit'),[name ' ' runName]),'C2_frequency_audit');
+        end
     end
     rec.status = 'completed';
       manifest.cases = [manifest.cases; rec]; %#ok<AGROW>
@@ -70,6 +76,8 @@ switch name
         C.resultFiles = {fullfile(base,'r5_sensor_conditioned_dynamic_fullwave_20260914.mat')};
         C.labels = {'R5'};
         C.bundleFile = fullfile(base,'fixed_gap','20250526_2500-3500_t400','FixedGap_B1_S136_T001p5s.mat');
+        C.comparisonCsv = fullfile(base,'three_method_compare_20260914','ThreeMethod_FrequencyAmplitude_Comparison.csv');
+        C.referenceCsv = fullfile(base,'figures','StrainBTT_B1_StrainReferenceValidation.csv');
     case '20251222'
         base = fullfile(root,'20251222_gap_vibration_identification_v1','latest_programs_20260905','results','gap_aware');
         % B1 and B5 are intentionally separate experiments; B1 is the
@@ -78,10 +86,17 @@ switch name
         C.resultFiles = {fullfile(base,'Main_GapAware_VPTopK_FullWave_20251222_B1_S123_r01_gapaware.mat')};
         C.labels = {'B1_R01'};
         C.bundleFile = '';
+        C.comparisonCsv = '';
+        C.referenceCsv = '';
         if includeB5
             C.resultFiles{end+1} = fullfile(base,'Main_GapAware_VPTopK_FullWave_20251222_B5_S123_r04_gapaware.mat');
             C.labels{end+1} = 'B5_R04';
         end
+        % Select the matching comparison file for each B1/B5 result.
+        C.comparisonFiles = {fullfile(root,'20251222_gap_vibration_identification_v1','latest_programs_20260905','results','three_method_compare_20260914_B1','ThreeMethod_FrequencyAmplitude_Comparison.csv'), ...
+            fullfile(root,'20251222_gap_vibration_identification_v1','latest_programs_20260905','results','three_method_compare_20260914_B5','ThreeMethod_FrequencyAmplitude_Comparison.csv')};
+        C.referenceFiles = {fullfile(root,'20251222_gap_vibration_identification_v1','latest_programs_20260905','results','strain_validation','StrainBTT_B1_StrainReferenceValidation.csv'), ...
+            fullfile(root,'20251222_gap_vibration_identification_v1','latest_programs_20260905','results','strain_validation','StrainBTT_B5_StrainReferenceValidation.csv')};
     otherwise
         error('EvidenceChain:UnknownCase','Unknown case %s.',name);
 end
