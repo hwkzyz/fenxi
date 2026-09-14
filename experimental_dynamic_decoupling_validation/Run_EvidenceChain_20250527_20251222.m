@@ -60,7 +60,14 @@ for ic = 1:numel(p.Results.Cases)
             [rec,~] = localPlot(rec,@()Plot_C2_FrequencyStabilityReferenceAudit(comparisonCsv,referenceCsv,fullfile(out,'frequency_audit'),[name ' ' runName]),'C2_frequency_audit');
         end
     end
-    rec.status = 'completed';
+    % Do not report a complete evidence chain when one or more requested
+    % diagnostics were skipped or failed.  The result itself may still be
+    % usable, but the manifest must expose the incomplete audit explicitly.
+    if isempty(rec.errors)
+        rec.status = 'completed';
+    else
+        rec.status = 'completed_with_errors';
+    end
       manifest.cases = [manifest.cases; rec]; %#ok<AGROW>
     end
 end
