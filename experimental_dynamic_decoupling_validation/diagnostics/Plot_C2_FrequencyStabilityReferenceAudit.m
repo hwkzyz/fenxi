@@ -21,9 +21,22 @@ exportgraphics(fig,fullfile(outputDir,'C2_frequency_stability_reference.png'),'R
 M=table(w,T.foundation_frequency_hz,T.v1_frequency_hz,T.r5_frequency_hz,ref, ...
  'VariableNames',{'window_id','foundation_hz','v1_hz','r5_hz','reference_hz'});
 M.r5_minus_reference_hz=M.r5_hz-M.reference_hz; M.v1_minus_reference_hz=M.v1_hz-M.reference_hz;
+% Primary-frequency gate: this is an audit gate, not a frequency selector.
+% It rejects out-of-band/branch-jump results but never overwrites a fitted value.
+searchHz = [300 1000];
+M.r5_in_search_band = isfinite(M.r5_hz) & M.r5_hz>=searchHz(1) & M.r5_hz<=searchHz(2);
+M.r5_step_hz = [NaN; abs(diff(M.r5_hz))];
+M.r5_continuity_pass = M.r5_in_search_band & (isnan(M.r5_step_hz) | M.r5_step_hz<=5);
+% V1/Foundation and the independent reference are comparison evidence only.
+% They must not veto R5: the methods intentionally model different physics,
+% and the fixed-gap Foundation route may select a wrong branch by design.
+M.r5_v1_agreement_pass = isfinite(M.r5_hz) & isfinite(M.v1_hz) & abs(M.r5_hz-M.v1_hz)<=2;
+M.r5_reference_agreement_pass = ~isfinite(M.reference_hz) | (isfinite(M.r5_hz) & abs(M.r5_minus_reference_hz)<=2);
+M.primary_frequency_gate = M.r5_continuity_pass;
 writetable(M,fullfile(outputDir,'C2_frequency_stability_reference.csv'));
 report=struct('label',label,'nWindows',n,'r5MedianHz',median(T.r5_frequency_hz,'omitnan'), ...
  'r5StdHz',std(T.r5_frequency_hz,'omitnan'),'referenceAvailable',any(isfinite(ref)), ...
+ 'searchHz',searchHz,'gatePass',all(M.primary_frequency_gate),'gatePassCount',sum(M.primary_frequency_gate), ...
  'outputDir',outputDir);
 save(fullfile(outputDir,'C2_frequency_stability_reference.mat'),'report','M','-v7.3');
 end
