@@ -1,0 +1,1 @@
+sensor_id,blade_id,StartLap,EndLap,LapCount,PulseCount,WidePointCount,SelectedPointCount,xc_mm,xc_seed_mm,center_gap_mm,SelectedWidthMm,RMSE,BoundRatio,LocalXcMAD,PulseXcMAD,HalfTemplateRMSE,HalfXcShiftMm,HalfAmplitudeRelShift,HalfPulseXcSignedShiftMm,LeftGradientRatio,RightGradientRatio,WidthDeficit,PointDeficit,IsStableCandidate,ChosenScore,Reason

@@ -1,0 +1,4 @@
+sensor_id,baseline_v,baseline_mode,base_ratio,sample_count,base_sample_count,threshold_v,pad_points
+1,-0.268486622121454,sensor_stream_low_state_histogram,0.904154545630856,41919891,37902060,0.5,4000
+2,-0.258867689564666,sensor_stream_low_state_histogram,0.906276902510217,41919880,37991019,0.5,4000
+3,-0.272086013608475,sensor_stream_low_state_histogram,0.904925258277735,41919893,37934370,0.5,4000

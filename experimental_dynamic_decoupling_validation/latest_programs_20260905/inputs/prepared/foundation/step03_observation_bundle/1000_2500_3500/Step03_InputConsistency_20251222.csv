@@ -1,0 +1,8 @@
+check_name,actual_value,expected_value,is_consistent,status
+Sensor_Config.Sensor_IDs,[1 2 3],[1 2 3],1,ok
+Sensor_Config.Blades_Num,6,6,1,ok
+Sensor_Config.OPR_ID,4,4,1,ok
+Sensor_Config.Sample_Rate_Hz,5000000,5000000,1,ok
+Step01 standard-angle reference,opr_threshold_start_edge,known OPR timing reference,1,ok
+Step02 OPR timing reference,threshold_rising_edge,known timing reference,1,ok
+Step02 OPR events per revolution,6,single finite value,1,ok

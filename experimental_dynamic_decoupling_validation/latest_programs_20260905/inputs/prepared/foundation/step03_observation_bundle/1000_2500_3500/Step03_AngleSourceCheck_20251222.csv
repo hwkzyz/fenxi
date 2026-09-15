@@ -1,0 +1,4 @@
+case_name,sensor_id,opr_events_per_revolution,has_relative_angle_deg,valid_relative_angle_ratio,relative_angle_min,relative_angle_max,fallback_angle_valid_ratio,median_abs_relative_vs_fallback_deg,median_relative_minus_fallback_deg,angle_source_status
+1000_2500_3500,1,6,1,0.999841458581054,37.4811748140439,39.3886090377648,0.999841458581054,0,0,ok
+1000_2500_3500,2,6,1,0.999841458581054,39.2057455079739,40.6683974666276,0.999841458581054,0,0,ok
+1000_2500_3500,3,6,1,0.999841458581054,10.9170008264716,12.6268696188301,0.999841458581054,0,0,ok

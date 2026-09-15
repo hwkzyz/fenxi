@@ -1,0 +1,5 @@
+case_name,source_mode,channel_id,file_count,first_file_id,last_file_id,bytes_total,source_dir,file_pattern
+1000_2500_3500,raw_dynamic_extraction,1,74,1000,74399,2216725129,E:\试验数据\20251222\传感器数据\1000_2500_3500,4-1-*.mat
+1000_2500_3500,raw_dynamic_extraction,2,74,1000,74399,2224096988,E:\试验数据\20251222\传感器数据\1000_2500_3500,4-2-*.mat
+1000_2500_3500,raw_dynamic_extraction,3,74,1000,74399,2198055273,E:\试验数据\20251222\传感器数据\1000_2500_3500,4-3-*.mat
+1000_2500_3500,raw_dynamic_extraction,4,74,1000,74399,1943812435,E:\试验数据\20251222\传感器数据\1000_2500_3500,4-4-*.mat
