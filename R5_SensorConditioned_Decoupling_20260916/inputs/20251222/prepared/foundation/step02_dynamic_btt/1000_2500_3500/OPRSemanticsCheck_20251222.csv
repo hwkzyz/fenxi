@@ -1,0 +1,3 @@
+candidate_events_per_revolution,rpm_median,rpm_min,rpm_max,rpm_std,is_within_expected_rpm_range,expected_rpm_min,expected_rpm_max,selected
+1,17536.1683622233,4412.93283515852,22665.4578422621,4391.65697266913,0,500,4500,0
+6,2922.92253280896,742.142565586797,3755.77450329833,731.534647889506,1,500,4500,1

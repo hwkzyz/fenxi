@@ -1,0 +1,4 @@
+case_name,sensor_id,pulse_count,revolution_count,complete_revolution_count,selected_shift,selected_shift_source,best_corr_max,best_corr_median,second_best_corr_median,corr_gap_median,valid_revolution_count,assigned_pulse_count,valid_assigned_pulse_count,quality_status
+1000_2500_3500,1,37845,6308,6307,2,quality_revolution_vote,0.999927402127743,0.987024708274264,0.276880385133048,0.711345131879112,6307,37842,37842,good
+1000_2500_3500,2,37845,6308,6307,3,quality_revolution_vote,0.999940558317081,0.990740751819899,0.312179209990783,0.67931685286253,6307,37842,37842,good
+1000_2500_3500,3,37845,6308,6307,4,quality_revolution_vote,0.999944029858793,0.98863476792099,0.330744076331413,0.658786412185672,6307,37842,37842,good

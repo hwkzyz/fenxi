@@ -1,0 +1,4 @@
+case_name,quality_flag,count,ratio
+1000_2500_3500,invalid_blade_id,9,7.92707094728498e-05
+1000_2500_3500,missing_observed_angle,9,7.92707094728498e-05
+1000_2500_3500,valid,113517,0.999841458581054
