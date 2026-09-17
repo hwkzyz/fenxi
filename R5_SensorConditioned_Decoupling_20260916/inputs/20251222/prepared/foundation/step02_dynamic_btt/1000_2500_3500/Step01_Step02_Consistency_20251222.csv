@@ -1,0 +1,4 @@
+case_name,sensor_id,step01_fingerprint_length,cfg_blades_num,fingerprint_length_matches_blades,raw_file_count_for_sensor,opr_events_per_revolution,sensor_in_cfg
+1000_2500_3500,1,6,6,1,74,6,1
+1000_2500_3500,2,6,6,1,74,6,1
+1000_2500_3500,3,6,6,1,74,6,1

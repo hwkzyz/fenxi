@@ -1,0 +1,2 @@
+case_name,source_mode,opr_event_count,opr_events_per_revolution,pulse_count,valid_pulse_count,rpm_min,rpm_median,rpm_max,good_sensor_count,revolution_quality_rows,blades_num
+1000_2500_3500,raw_dynamic_extraction,37845,6,113535,113526,742.142565586797,2922.92253280896,3755.77450329833,3,18924,6
