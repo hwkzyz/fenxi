@@ -1,0 +1,10 @@
+function T=Run_AdaptiveSGDualGapDiagnostic(snrList,seeds)
+%RUN_ADAPTIVESGDUALGAPDIAGNOSTIC Test whether dual failures are gap-boundary specific.
+if nargin<1||isempty(snrList),snrList=[15 5];end
+if nargin<2||isempty(seeds),seeds=1:3;end
+root=fileparts(mfilename('fullpath'));mainDir=fileparts(root);addpath(mainDir,'-begin');addpath(fullfile(mainDir,'local_func'),'-begin');
+ctx=load_inv_log_2_project_context(mainDir);tr=load_fixed_trust_domain(mainDir);lib=make_fixed_trust_template_library(ctx.gapList,ctx.xCell,ctx.yCell,NaN,ctx.cfgAna.xGridN,get_inv_log_2_model_def(),tr);base=make_inv_log_2_demo_case(ctx,.2);cfg0=base.cfgCase;cfg0.RPM_low=min(cfg0.RPM_high,300);cfg0.NumRevs_low=20;cfg0.NumRevs_high=8;cfg0.route30ForwardModel="low_increment";cfg0.route30LowTemplateMethod="adaptive_sg";cfg0.f_true=[700 1200];cfg0.A_true=[.25 .15];cfg0.phi_true=[pi/4 -pi/3];gLow=.5;gHigh=.8;
+r=repmat(struct('snr_db',NaN,'seed',NaN,'window_mm',NaN,'f1_est',NaN,'f2_est',NaN,'max_frequency_error_hz',NaN,'g_error_mm',NaN,'A_error_mm',NaN,'success',false),numel(snrList)*numel(seeds),1);i=0;
+for snr=snrList,for seed=seeds,cfg=cfg0;cfg.snrDb=snr;low=simulate_low_speed_template(@(z)eval_gap_template(lib,gLow,z),cfg,lib.domain,snr,941000+seed);C=calibrate_inv_log_2_low_speed(low,lib,cfg);high=simulate_highspeed_from_low_increment(C.templateModel,gHigh-C.pathCal.g0,cfg,snr,'snr_db',943000+seed);hm=map_highspeed_to_space(high,cfg.alpha_k,cfg.R_tip,lib.domain,.02);fit=run_inv_log_2_high_with_calibration(C,hm,cfg);f=sort(fit.f_id(:));i=i+1;r(i).snr_db=snr;r(i).seed=seed;r(i).window_mm=C.low_speed_selected_window_mm;r(i).f1_est=f(1);r(i).f2_est=f(2);r(i).max_frequency_error_hz=max(abs(f-[700;1200]));r(i).g_error_mm=abs(fit.g_used-gHigh);r(i).A_error_mm=max(abs(sort(fit.A_id)-[.15 .25]));r(i).success=r(i).max_frequency_error_hz<=2&&r(i).g_error_mm<=.05;end,end
+T=struct2table(r);out=fullfile(root,'output','adaptive_sg_main_regression');writetable(T,fullfile(out,'dual_gap_08_diagnostic.csv'));save(fullfile(out,'dual_gap_08_diagnostic.mat'),'T');disp(T);
+end
